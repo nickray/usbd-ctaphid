@@ -1,35 +1,19 @@
-pub enum Command {
-    // mandatory for CTAP1
-    Ping = 0x01,
-    Msg = 0x03,
-    Init = 0x06,
-    Error = 0x3f,
+pub const PACKET_SIZE: usize = 64;
 
-    // optional for CTAP1
-    Wink = 0x08,
-    Lock = 0x04,
+// 7609 bytes
+pub const MESSAGE_SIZE: usize = PACKET_SIZE - 7 + 128 * (PACKET_SIZE - 5);
 
-    // mandatory for CTAP2
-    Cbor = 0x10,
-    Cancel = 0x11,
-    KeepAlive = 0x3b,
+// #[repr(C)]
+// pub struct InitPacket {
+//     channel_id: u32,
+//     command: u8,
+//     length: u16,
+//     data: [u8],
+// }
 
-    // vendor
-    VendorFirst = 0x40,
-    VendorLast = 0x7f,
-}
-
-#[repr(C)]
-pub struct InitPacket {
-    channel_id: u32,
-    command: u8,
-    length: u16,
-    data: [u8],
-}
-
-#[repr(C)]
-pub struct ContPacket {
-    channel_id: u32,
-    sequence: u16,
-    data: [u8],
-}
+// #[repr(C)]
+// pub struct ContPacket {
+//     channel_id: u32,
+//     sequence: u16,
+//     data: [u8],
+// }
