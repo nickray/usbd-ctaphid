@@ -328,6 +328,9 @@ where Bus: UsbBus
                             // 0x8: does not implement MSG
                             // self.buffer[16] = 0x01 | 0x08;
                             self.buffer[16] = 0x01 | 0x04;
+                            for element in self.buffer[17..].iter_mut() {
+                                *element = 0;
+                            }
                             self.state = State::Sending(response);
                             self.write_packet_if_necessary();
                         }
@@ -351,12 +354,81 @@ where Bus: UsbBus
             Command::Wink => {
                 hprintln!("received WINK!").ok();
                 hprintln!("data: {:?}", &self.buffer[..request.length as usize]).ok();
-                self.state = State::Idle;
+                let response = Response {
+                    channel: request.channel,
+                    command: request.command,
+                    length: 0,
+                };
+                for element in self.buffer[..].iter_mut() {
+                    *element = 0;
+                }
+                self.state = State::Sending(response);
+                self.write_packet_if_necessary();
             },
 
             Command::Cbor => {
+                // self.handle_cbor(request.length);
                 hprintln!("received CBOR!").ok();
-                hprintln!("data: {:?}", &self.buffer[..request.length as usize]).ok();
+                let data = &self.buffer[..request.length as usize];
+                hprintln!("data: {:?}", data).ok();
+                if data == &[4] {
+                    hprintln!("authenticatorGetInfo").ok();
+                    // status: 0 = success;
+                    self.buffer[0] = 0;
+                    // CBOR encoded reponse
+                    // let encoder = CtapCborEncoder(&mut self.buffer[1..]);
+                    // encoder.map(|encoder|
+                    //     encoder.item(|encoder|
+                    //         encoder.key(|encoder|
+                    let buf = &mut self.buffer[1..];
+                    // // map(6)
+                    // let buf[0] = 0xa6;
+                    // map(1)
+                    buf[0] = 0xa1;
+                    let buf = &mut buf[1..];
+
+                        // unsigned(1)
+                        buf[0] = 0x01;
+                        let buf = &mut buf[1..];
+
+                            // array(2)
+                            buf[0] = 0x82;
+                            let buf = &mut buf[1..];
+
+                                // text(8)
+                                buf[0] = 0x68;
+                                let buf = &mut buf[1..];
+                                buf[..8].copy_from_slice(b"FIDO_2_0");
+                                let buf = &mut buf[8..];
+
+                                // text(6)
+                                buf[0] = 0x66;
+                                let buf = &mut buf[1..];
+                                buf[..6].copy_from_slice(b"U2F_V2");
+                                let buf = &mut buf[6..];
+
+                        // unsigned(3)
+                        buf[0] = 0x03;
+                        let buf = &mut buf[1..];
+
+                            // text(16)
+                            buf[0] = 0x70;
+                            let buf = &mut buf[1..];
+                            buf[..16].copy_from_slice(b"0123456789ABCDEF");
+                            let buf = &mut buf[16..];
+
+
+                    let response = Response {
+                        channel: request.channel,
+                        command: request.command,
+                        length: 20 + 18,
+                    };
+                    for element in buf[..].iter_mut() {
+                        *element = 0;
+                    }
+                    self.state = State::Sending(response);
+                    self.write_packet_if_necessary();
+                }
                 self.state = State::Idle;
             }
 
@@ -378,7 +450,7 @@ where Bus: UsbBus
                 packet[5..7].copy_from_slice(&response.length.to_be_bytes());
                 packet[7..7 + response.length as usize].copy_from_slice(
                     &self.buffer[..response.length as usize]);
-                hprintln!("with data {:?}", &self.buffer[..response.length as usize]).ok();
+                hprintln!("with data {:x?}", &self.buffer[..response.length as usize]).ok();
                 let result = self.write_endpoint.write(&packet);
                 match result {
                     Err(UsbError::WouldBlock) => {
