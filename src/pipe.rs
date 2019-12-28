@@ -50,6 +50,31 @@ struct Response {
 }
 
 #[derive(Copy,Clone,Debug,Eq,PartialEq)]
+struct MessageState {
+    // sequence number of next continuation packet
+    next_sequence: u8,
+    // number of bytes of message payload transmitted so far
+    transmitted: usize,
+}
+
+impl Default for MessageState {
+    fn default() -> Self {
+        Self {
+            next_sequence: 0,
+            transmitted: PACKET_SIZE - 7,
+        }
+    }
+}
+
+impl MessageState {
+    // update state due to receiving a full new continuation packet
+    pub fn absorb_packet(&mut self) {
+        self.next_sequence += 1;
+        self.transmitted += PACKET_SIZE - 5;
+    }
+}
+
+#[derive(Copy,Clone,Debug,Eq,PartialEq)]
 pub enum Command {
     // mandatory for CTAP1
     Ping = 0x01,
@@ -97,22 +122,15 @@ impl TryFrom<u8> for Command {
 #[allow(unused)]
 enum State {
     Idle,
+
     // if request payload data is larger than one packet
-    Receiving(Request),
-    // the request message is ready
-    RequestPending,
+    Receiving((Request, MessageState)),
 
-    Sending(Response),
+    // the request message is ready, waiting for processing
+    RequestPending(Request),
 
-    // DataIn,
-    // DataInZlp,
-    // DataInLast,
-    // CompleteIn(Request),
-    // StatusOut,
-    // CompleteOut,
-    // DataOut(Request),
-    // StatusIn,
-    // Error,
+    ResponsePending(Response),
+    Sending((Response, MessageState)),
 }
 
 pub struct Pipe<'alloc, Bus>
@@ -125,12 +143,9 @@ where Bus: UsbBus
     // shared between requests and responses, due to size
     buffer: [u8; MESSAGE_SIZE],
 
+    // we assign channel IDs one by one, this is the one last assigned
     last_channel: u32,
 
-    // expected sequence number of next continuation packet
-    expected_sequence: u8,
-    // number of bytes received of request payload
-    received: usize,
 }
 
 impl<'alloc, Bus> Pipe<'alloc, Bus>
@@ -147,9 +162,6 @@ where Bus: UsbBus
             state: State::Idle,
             buffer: [0u8; MESSAGE_SIZE],
             last_channel: 0,
-            expected_sequence: 0,
-            received: 0,
-            // length: 0,
         }
     }
 
@@ -220,6 +232,7 @@ where Bus: UsbBus
             let request = Request {
                 channel,
                 command,
+                // can't actually fail
                 length: u16::from_be_bytes(packet[5..7].try_into().unwrap()),
             };
 
@@ -236,27 +249,24 @@ where Bus: UsbBus
             if request.length > PACKET_SIZE as u16 - 7 {
                 // store received part of payload,
                 // prepare for continuation packets
-                self.state = State::Receiving(request);
-                self.expected_sequence = 0;
-                self.received = PACKET_SIZE - 7;
-                self.buffer[..self.received].copy_from_slice(&packet[7..]);
+                self.buffer[..PACKET_SIZE - 7].copy_from_slice(&packet[7..]);
+                self.state = State::Receiving((request, MessageState::default()));
                 // we're done... wait for next packet
                 return;
             } else {
                 // request fits in one packet
-                self.state = State::RequestPending;
-                // let payload = &packet[7..request.length as usize + 7];
                 self.buffer[..request.length as usize].copy_from_slice(
-                    &packet[7..request.length as usize + 7]);
-                self.handle_request(request); //, payload);
+                    &packet[7..][..request.length as usize]);
+                self.state = State::RequestPending(request);
+                self.handle_request();
                 return;
             }
         } else {
             // case of continuation packet
             match self.state {
-                State::Receiving(request) => {
+                State::Receiving((request, mut message_state)) => {
                     let sequence = packet[4];
-                    if sequence != self.expected_sequence {
+                    if sequence != message_state.next_sequence {
                         // error handling?
                         return;
                     }
@@ -266,21 +276,18 @@ where Bus: UsbBus
                     }
 
                     let payload_length = request.length as usize;
-                    if self.received + (PACKET_SIZE - 5) < payload_length {
+                    if message_state.transmitted + (PACKET_SIZE - 5) < payload_length {
                         // store received part of payload
-                        self.expected_sequence += 1;
-                        self.received += PACKET_SIZE - 5;
-                        self.buffer[self.received..self.received + PACKET_SIZE - 5]
+                        self.buffer[message_state.transmitted..][..PACKET_SIZE - 5]
                             .copy_from_slice(&packet[5..]);
+                        message_state.absorb_packet();
                         return;
                     } else {
-                        // self.received = self.length;
-                        self.state = State::RequestPending;
-                        let missing = request.length as usize - self.received;
-                        self.buffer[self.received..payload_length]
-                            .copy_from_slice(&packet[5..5 + missing]);
-                        // let payload = &self.buffer[..payload_length];
-                        self.handle_request(request);//, payload);
+                        let missing = request.length as usize - message_state.transmitted;
+                        self.buffer[message_state.transmitted..payload_length]
+                            .copy_from_slice(&packet[5..][..missing]);
+                        self.state = State::RequestPending(request);
+                        self.handle_request();
                     }
                 },
                 _ => {
@@ -291,169 +298,242 @@ where Bus: UsbBus
         }
     }
 
-    fn handle_request(&mut self, request: Request) { //, payload: &[u8]) {
-        // dispatch request further
-        match request.command {
-            Command::Init => {
-                hprintln!("received INIT!").ok();
-                hprintln!("data: {:?}", &self.buffer[..request.length as usize]).ok();
-                match request.channel {
-                    // broadcast channel ID - request for assignment
-                    0xFFFF_FFFF => {
-                        if request.length != 8 {
-                            // error
-                        } else {
-                            self.last_channel += 1;
-                            hprintln!(
-                                "assigned channel {}", self.last_channel).ok();
-                            let _nonce = &self.buffer[..8];
-                            let response = Response {
-                                channel: 0xFFFF_FFFF,
-                                command: request.command,
-                                length: 17,
-                            };
+    fn handle_request(&mut self) {
+        if let State::RequestPending(request) = self.state {
+            // dispatch request further
+            match request.command {
+                Command::Init => {
+                    hprintln!("received INIT!").ok();
+                    hprintln!("data: {:?}", &self.buffer[..request.length as usize]).ok();
+                    match request.channel {
+                        // broadcast channel ID - request for assignment
+                        0xFFFF_FFFF => {
+                            if request.length != 8 {
+                                // error
+                            } else {
+                                self.last_channel += 1;
+                                hprintln!(
+                                    "assigned channel {}", self.last_channel).ok();
+                                let _nonce = &self.buffer[..8];
+                                let response = Response {
+                                    channel: 0xFFFF_FFFF,
+                                    command: request.command,
+                                    length: 17,
+                                };
 
-                            self.buffer[8..12].copy_from_slice(&self.last_channel.to_be_bytes());
-                            // CTAPHID protocol version
-                            self.buffer[12] = 2;
-                            // major device version number
-                            self.buffer[13] = 0;
-                            // minor device version number
-                            self.buffer[14] = 0;
-                            // build device version number
-                            self.buffer[15] = 0;
-                            // capabilities flags
-                            // 0x1: implements WINK
-                            // 0x4: implements CBOR
-                            // 0x8: does not implement MSG
-                            // self.buffer[16] = 0x01 | 0x08;
-                            self.buffer[16] = 0x01 | 0x04;
-                            for element in self.buffer[17..].iter_mut() {
-                                *element = 0;
+                                self.buffer[8..12].copy_from_slice(&self.last_channel.to_be_bytes());
+                                // CTAPHID protocol version
+                                self.buffer[12] = 2;
+                                // major device version number
+                                self.buffer[13] = 0;
+                                // minor device version number
+                                self.buffer[14] = 0;
+                                // build device version number
+                                self.buffer[15] = 0;
+                                // capabilities flags
+                                // 0x1: implements WINK
+                                // 0x4: implements CBOR
+                                // 0x8: does not implement MSG
+                                // self.buffer[16] = 0x01 | 0x08;
+                                self.buffer[16] = 0x01 | 0x04;
+                                self.start_sending(response);
                             }
-                            self.state = State::Sending(response);
-                            self.write_packet_if_necessary();
+                        },
+                        0 => {
+                            // this is an error / reserved number
+                        },
+                        _ => {
+                            // this is assumedly the active channel,
+                            // already allocated to a client
                         }
-                    },
-                    0 => {
-                        // this is an error / reserved number
-                    },
-                    _ => {
-                        // this is assumedly the active channel,
-                        // already allocated to a client
                     }
-                }
-            },
+                },
 
-            Command::Ping => {
-                hprintln!("received PING!").ok();
-                hprintln!("data: {:?}", &self.buffer[..request.length as usize]).ok();
-                self.state = State::Idle;
-            },
+                Command::Ping => {
+                    hprintln!("received PING!").ok();
+                    hprintln!("data: {:?}", &self.buffer[..request.length as usize]).ok();
+                    self.state = State::Idle;
+                },
 
-            Command::Wink => {
-                hprintln!("received WINK!").ok();
-                hprintln!("data: {:?}", &self.buffer[..request.length as usize]).ok();
-                let response = Response {
-                    channel: request.channel,
-                    command: request.command,
-                    length: 0,
-                };
-                for element in self.buffer[..].iter_mut() {
-                    *element = 0;
-                }
-                self.state = State::Sending(response);
-                self.write_packet_if_necessary();
-            },
-
-            Command::Cbor => {
-                // self.handle_cbor(request.length);
-                hprintln!("received CBOR!").ok();
-                let data = &self.buffer[..request.length as usize];
-                hprintln!("data: {:?}", data).ok();
-                if data == &[4] {
-                    hprintln!("authenticatorGetInfo").ok();
-
-                    use serde::ser::Serializer;
-                    use serde::ser::SerializeMap;
-
-                    let writer = serde_cbor::ser::SliceWrite::new(&mut self.buffer[..]);
-                    let mut ser = serde_cbor::Serializer::new(writer);//.packed_format();
-
-                    // status: 0 = success
-                    ser.serialize_u8(0).unwrap();
-
-                    // now the actual CBOR payload
-                    let mut map = ser.serialize_map(Some(2)).unwrap();
-
-                    map.serialize_key(&1u8).unwrap();
-                    // TODO: what would be the syntax to have an array as value,
-                    // and e.g. write the supported versions individually, and
-                    // hence more easily configurably?
-                    map.serialize_value(&["FIDO_2_0", "U2F_V2"]).unwrap();
-
-                    map.serialize_key(&3u8).unwrap();
-                    map.serialize_value("AAGUID0123456789").unwrap();
-
-                    // let _: () = map.end().unwrap();
-
-                    let writer = ser.into_inner();
-                    let size = writer.bytes_written();
-                    // hprintln!("using serde, wrote {} bytes: {:x?}", size, &self.buffer[..size]).ok();
-
+                Command::Wink => {
+                    hprintln!("received WINK!").ok();
+                    hprintln!("data: {:?}", &self.buffer[..request.length as usize]).ok();
                     let response = Response {
                         channel: request.channel,
                         command: request.command,
-                        length: size as u16,
+                        length: 0,
                     };
-                    // zeroize the rest of the buffer, as always full packets are sent
-                    // TODO: implement on the packet level
-                    for element in self.buffer[size..].iter_mut() {
-                        *element = 0;
-                    }
-                    self.state = State::Sending(response);
-                    self.write_packet_if_necessary();
-                }
-                self.state = State::Idle;
-            }
+                    self.start_sending(response);
+                },
 
-            // TODO: handle other requests
-            _ => {},
+                Command::Cbor => {
+                    // self.handle_cbor(request.length);
+                    hprintln!("received CBOR!").ok();
+                    let data = &self.buffer[..request.length as usize];
+                    hprintln!("data: {:?}", data).ok();
+                    if data == &[4] {
+                        hprintln!("authenticatorGetInfo").ok();
+
+                        use serde::ser::Serializer;
+                        use serde::ser::SerializeMap;
+
+                        let writer = serde_cbor::ser::SliceWrite::new(&mut self.buffer[..]);
+                        let mut ser = serde_cbor::Serializer::new(writer);//.packed_format();
+
+                        // status: 0 = success
+                        ser.serialize_u8(0).unwrap();
+
+                        // now the actual CBOR payload
+                        let mut map = ser.serialize_map(Some(2)).unwrap();
+
+                        // versions
+                        map.serialize_key(&1u8).unwrap();
+                        // TODO: what would be the syntax to have an array as value,
+                        // and e.g. write the supported versions individually, and
+                        // hence more easily configurably?
+                        map.serialize_value(&["FIDO_2_0", "U2F_V2"]).unwrap();
+
+                        // extensions
+                        map.serialize_key(&2u8).unwrap();
+                        map.serialize_value(&["hmac-secret"]).unwrap();
+
+                        // aaguid
+                        map.serialize_key(&3u8).unwrap();
+                        map.serialize_value("AAGUID0123456789").unwrap();
+                        // let mut submap = ser.serialize_map(Some(1)).unwrap();
+                        // submap.serialize_key(&4u8).unwrap();
+                        // submap.serialize_value(&5u8).unwrap();
+
+                        // options
+                        // map.serialize_key(&4u8).unwrap();
+
+                        // maxMsgSize
+                        map.serialize_key(&5u8).unwrap();
+                        map.serialize_value(&MESSAGE_SIZE).unwrap();
+
+                        // pinProtocols
+                        map.serialize_key(&6).unwrap();
+                        map.serialize_value(&[1]).unwrap();
+
+                        // let _: () = map.end().unwrap();
+
+                        let writer = ser.into_inner();
+                        let size = writer.bytes_written();
+                        // hprintln!("using serde, wrote {} bytes: {:x?}", size, &self.buffer[..size]).ok();
+
+                        let response = Response {
+                            channel: request.channel,
+                            command: request.command,
+                            length: size as u16,
+                        };
+                        self.start_sending(response);
+                    }
+                }
+
+                // TODO: handle other requests
+                _ => {},
+            }
         }
     }
 
+    fn start_sending(&mut self, response: Response) {
+        self.state = State::ResponsePending(response);
+        self.maybe_write_packet();
+    }
+
     // called from poll, and when a packet has been sent
-    pub(crate) fn write_packet_if_necessary(&mut self) {
+    pub(crate) fn maybe_write_packet(&mut self) {
         match self.state {
-            State::Sending(response) => {
-                hprintln!("sending response {:?}", &response).ok();
-                // multi-packet responses not implemented yet
-                assert!(response.length < PACKET_SIZE as u16 - 7);
+            State::ResponsePending(response) => {
+
+                // zeros leftover bytes
                 let mut packet = [0u8; PACKET_SIZE];
                 packet[..4].copy_from_slice(&response.channel.to_be_bytes());
                 packet[4] = response.command as u8 | 0x80;
                 packet[5..7].copy_from_slice(&response.length.to_be_bytes());
-                packet[7..7 + response.length as usize].copy_from_slice(
-                    &self.buffer[..response.length as usize]);
-                hprintln!("with data {:x?}", &self.buffer[..response.length as usize]).ok();
+
+                let fits_in_one_packet = response.length as usize <= PACKET_SIZE - 7;
+                if fits_in_one_packet {
+                    packet[7..][..response.length as usize].copy_from_slice(
+                        &self.buffer[..response.length as usize]);
+                    self.state = State::Idle;
+                } else {
+                    packet[7..].copy_from_slice(&self.buffer[..PACKET_SIZE - 7]);
+                }
+
+                // try actually sending
                 let result = self.write_endpoint.write(&packet);
+
                 match result {
                     Err(UsbError::WouldBlock) => {
                         // fine, can't write try later
-                        // this should only happen when
+                        // this shouldn't happen probably
                     },
                     Err(_) => {
                         panic!("unexpected error writing packet!");
                     },
                     Ok(PACKET_SIZE) => {
                         // goodie, this worked
-                        self.state = State::Idle;
+                        if fits_in_one_packet {
+                            self.state = State::Idle;
+                            // hprintln!("StartSent {} bytes, idle again", response.length).ok();
+                        } else {
+                            self.state = State::Sending((response, MessageState::default()));
+                            // hprintln!(
+                            //     "StartSent {} of {} bytes, waiting to send again",
+                            //     PACKET_SIZE - 7, response.length).ok();
+                            // hprintln!("State: {:?}", &self.state).ok();
+                        }
                     },
                     Ok(_) => {
                         panic!("unexpected size writing packet!");
                     },
                 };
             },
+
+            State::Sending((response, mut message_state)) => {
+                // hprintln!("in StillSending").ok();
+                let mut packet = [0u8; PACKET_SIZE];
+                packet[..4].copy_from_slice(&response.channel.to_be_bytes());
+                packet[4] = message_state.next_sequence;
+
+                let sent = message_state.transmitted;
+                let remaining = response.length as usize - sent;
+                let last_packet = remaining <= PACKET_SIZE - 5;
+                if last_packet {
+                    packet[5..][..remaining].copy_from_slice(
+                        &self.buffer[message_state.transmitted..response.length as usize]);
+                } else {
+                    packet[5..].copy_from_slice(
+                        &self.buffer[message_state.transmitted..][..PACKET_SIZE - 5]);
+                }
+
+                // try actually sending
+                let result = self.write_endpoint.write(&packet);
+
+                match result {
+                    Err(UsbError::WouldBlock) => {
+                        // fine, can't write try later
+                        // this shouldn't happen probably
+                        hprintln!("can't send, write endpoint busy").ok();
+                    },
+                    Err(_) => {
+                        panic!("unexpected error writing packet!");
+                    },
+                    Ok(PACKET_SIZE) => {
+                        // goodie, this worked
+                        if last_packet {
+                            self.state = State::Idle;
+                        } else {
+                            message_state.absorb_packet();
+                        }
+                    },
+                    Ok(_) => {
+                        panic!("unexpected size writing packet!");
+                    },
+                };
+            },
+
             // nothing to send
             _ => {
             },
