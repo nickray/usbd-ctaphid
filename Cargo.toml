@@ -11,8 +11,9 @@ cortex-m-semihosting = "0.3.5"
 cortex-m-funnel = { version = "0.1.0-alpha.1", optional = true}
 ufmt = { version = "0.1.0", optional = true}
 serde = { version = "1.0", default-features = false, features = ["derive"] }
+serde_bytes = { version = "0.11.3", default-features = false }
 serde_cbor = { version = "0.10", default-features = false }
-# serde_cbor = { path ="../cbor", default-features = false }
+# serde_cbor = { path ="../serde_cbor", default-features = false }
 
 [features]
 logging = ["cortex-m-funnel", "ufmt"]

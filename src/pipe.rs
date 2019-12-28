@@ -14,6 +14,7 @@ No state is maintained between transactions.
 
 use core::convert::TryInto;
 use core::convert::TryFrom;
+use serde::Serialize;
 
 use cortex_m_semihosting::hprintln;
 
@@ -71,6 +72,30 @@ impl MessageState {
     pub fn absorb_packet(&mut self) {
         self.next_sequence += 1;
         self.transmitted += PACKET_SIZE - 5;
+    }
+}
+
+/// CTAP CBOR is crazy serious about canonical format.
+/// If you change the order here, for instance python-fido2
+/// will no longer parse the entire authenticatorGetInfo
+#[derive(Copy,Clone,Debug,Eq,PartialEq,Serialize)]
+#[allow(non_snake_case)]
+struct CtapOptions {
+    rk: bool,
+    up: bool,
+    // uv: bool,
+    plat: bool,
+    clientPin: bool,
+}
+
+impl Default for CtapOptions {
+    fn default() -> Self {
+        Self {
+            plat: false,
+            rk: true,
+            clientPin: false,
+            up: true,
+        }
     }
 }
 
@@ -184,7 +209,7 @@ where Bus: UsbBus
     }
 
     pub(crate) fn read_and_handle_packet(&mut self) {
-        hprintln!("got a packet!").ok();
+        // hprintln!("got a packet!").ok();
         let mut packet = [0u8; PACKET_SIZE];
         match self.read_endpoint.read(&mut packet) {
             Ok(PACKET_SIZE) => {},
@@ -208,9 +233,9 @@ where Bus: UsbBus
         };
 
         let channel = u32::from_be_bytes(packet[..4].try_into().unwrap());
-        hprintln!("channel {}", channel).ok();
+        // hprintln!("channel {}", channel).ok();
         let is_initialization = (packet[4] >> 7) != 0;
-        hprintln!("is_initialization {}", is_initialization).ok();
+        // hprintln!("is_initialization {}", is_initialization).ok();
 
         if is_initialization {
             // case of initialization packet
@@ -222,7 +247,7 @@ where Bus: UsbBus
             }
 
             let command_number = packet[4] & !0x80;
-            hprintln!("command number {}", command_number).ok();
+            // hprintln!("command number {}", command_number).ok();
             let command = match Command::try_from(command_number) {
                 Ok(command) => command,
                 // `solo ls` crashes here as it uses command 0x86
@@ -236,7 +261,7 @@ where Bus: UsbBus
                 length: u16::from_be_bytes(packet[5..7].try_into().unwrap()),
             };
 
-            hprintln!("request is {:?}", &request).ok();
+            // hprintln!("request is {:?}", &request).ok();
 
             if request.length > MESSAGE_SIZE as u16 {
                 // non-conforming client - we disregard it
@@ -303,8 +328,8 @@ where Bus: UsbBus
             // dispatch request further
             match request.command {
                 Command::Init => {
-                    hprintln!("received INIT!").ok();
-                    hprintln!("data: {:?}", &self.buffer[..request.length as usize]).ok();
+                    // hprintln!("received INIT!").ok();
+                    // hprintln!("data: {:?}", &self.buffer[..request.length as usize]).ok();
                     match request.channel {
                         // broadcast channel ID - request for assignment
                         0xFFFF_FFFF => {
@@ -312,8 +337,8 @@ where Bus: UsbBus
                                 // error
                             } else {
                                 self.last_channel += 1;
-                                hprintln!(
-                                    "assigned channel {}", self.last_channel).ok();
+                                // hprintln!(
+                                //     "assigned channel {}", self.last_channel).ok();
                                 let _nonce = &self.buffer[..8];
                                 let response = Response {
                                     channel: 0xFFFF_FFFF,
@@ -368,11 +393,11 @@ where Bus: UsbBus
 
                 Command::Cbor => {
                     // self.handle_cbor(request.length);
-                    hprintln!("received CBOR!").ok();
+                    // hprintln!("received CBOR!").ok();
                     let data = &self.buffer[..request.length as usize];
-                    hprintln!("data: {:?}", data).ok();
+                    // hprintln!("data: {:?}", data).ok();
                     if data == &[4] {
-                        hprintln!("authenticatorGetInfo").ok();
+                        hprintln!("received authenticatorGetInfo").ok();
 
                         use serde::ser::Serializer;
                         use serde::ser::SerializeMap;
@@ -384,14 +409,14 @@ where Bus: UsbBus
                         ser.serialize_u8(0).unwrap();
 
                         // now the actual CBOR payload
-                        let mut map = ser.serialize_map(Some(2)).unwrap();
+                        let mut map = ser.serialize_map(Some(6)).unwrap();
 
                         // versions
                         map.serialize_key(&1u8).unwrap();
                         // TODO: what would be the syntax to have an array as value,
                         // and e.g. write the supported versions individually, and
                         // hence more easily configurably?
-                        map.serialize_value(&["FIDO_2_0", "U2F_V2"]).unwrap();
+                        map.serialize_value(&["U2F_V2", "FIDO_2_0"]).unwrap();
 
                         // extensions
                         map.serialize_key(&2u8).unwrap();
@@ -399,13 +424,24 @@ where Bus: UsbBus
 
                         // aaguid
                         map.serialize_key(&3u8).unwrap();
-                        map.serialize_value("AAGUID0123456789").unwrap();
-                        // let mut submap = ser.serialize_map(Some(1)).unwrap();
-                        // submap.serialize_key(&4u8).unwrap();
-                        // submap.serialize_value(&5u8).unwrap();
+                        // NB: byte slices get serialized as collection of u8, which
+                        // is not what we want here
+                        map.serialize_value(&serde_bytes::Bytes::new(b"AAGUID0123456789")).unwrap();
+                        // map.serialize_value(b"AAGUID0123456789").unwrap();
 
                         // options
-                        // map.serialize_key(&4u8).unwrap();
+                        map.serialize_key(&4u8).unwrap();
+                        let options = CtapOptions::default();
+                        // let mut b = [0u8; 128];
+                        // let w = serde_cbor::ser::SliceWrite::new(&mut b[..]);
+                        // let mut s = serde_cbor::Serializer::new(w);//.packed_format();
+                        // options.serialize(&mut s).unwrap();
+                        // let w = s.into_inner();
+                        // let sz = w.bytes_written();
+                        // hprintln!("options cbor = {:x?}", &w.into_inner()[..sz]).ok();
+
+                        // danger, danger: these options, too, need to be canonical CBOR
+                        map.serialize_value(&options).unwrap();
 
                         // maxMsgSize
                         map.serialize_key(&5u8).unwrap();
@@ -515,7 +551,8 @@ where Bus: UsbBus
                     Err(UsbError::WouldBlock) => {
                         // fine, can't write try later
                         // this shouldn't happen probably
-                        hprintln!("can't send, write endpoint busy").ok();
+                        hprintln!("can't send seq {}, write endpoint busy",
+                                  message_state.next_sequence).ok();
                     },
                     Err(_) => {
                         panic!("unexpected error writing packet!");
@@ -526,6 +563,9 @@ where Bus: UsbBus
                             self.state = State::Idle;
                         } else {
                             message_state.absorb_packet();
+                            // DANGER! destructuring in the match arm copies out
+                            // message state, so need to update state
+                            self.state = State::Sending((response, message_state));
                         }
                     },
                     Ok(_) => {
