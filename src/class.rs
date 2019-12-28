@@ -145,6 +145,7 @@ where
     }
 
     fn poll(&mut self) {
+        self.pipe.write_packet_if_necessary();
     }
 
     // called when endpoint with given address received a packet
@@ -158,6 +159,7 @@ where
     // called when endpoint with given address sent a packet
     fn endpoint_in_complete(&mut self, addr: EndpointAddress) {
         if addr == self.pipe.write_address() {
+            self.pipe.write_packet_if_necessary();
         }
     }
 
