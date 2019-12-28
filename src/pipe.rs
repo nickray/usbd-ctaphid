@@ -373,57 +373,42 @@ where Bus: UsbBus
                 hprintln!("data: {:?}", data).ok();
                 if data == &[4] {
                     hprintln!("authenticatorGetInfo").ok();
-                    // status: 0 = success;
-                    self.buffer[0] = 0;
-                    // CBOR encoded reponse
-                    // let encoder = CtapCborEncoder(&mut self.buffer[1..]);
-                    // encoder.map(|encoder|
-                    //     encoder.item(|encoder|
-                    //         encoder.key(|encoder|
-                    let buf = &mut self.buffer[1..];
-                    // // map(6)
-                    // let buf[0] = 0xa6;
-                    // map(1)
-                    buf[0] = 0xa1;
-                    let buf = &mut buf[1..];
 
-                        // unsigned(1)
-                        buf[0] = 0x01;
-                        let buf = &mut buf[1..];
+                    use serde::ser::Serializer;
+                    use serde::ser::SerializeMap;
 
-                            // array(2)
-                            buf[0] = 0x82;
-                            let buf = &mut buf[1..];
+                    let writer = serde_cbor::ser::SliceWrite::new(&mut self.buffer[..]);
+                    let mut ser = serde_cbor::Serializer::new(writer);//.packed_format();
 
-                                // text(8)
-                                buf[0] = 0x68;
-                                let buf = &mut buf[1..];
-                                buf[..8].copy_from_slice(b"FIDO_2_0");
-                                let buf = &mut buf[8..];
+                    // status: 0 = success
+                    ser.serialize_u8(0).unwrap();
 
-                                // text(6)
-                                buf[0] = 0x66;
-                                let buf = &mut buf[1..];
-                                buf[..6].copy_from_slice(b"U2F_V2");
-                                let buf = &mut buf[6..];
+                    // now the actual CBOR payload
+                    let mut map = ser.serialize_map(Some(2)).unwrap();
 
-                        // unsigned(3)
-                        buf[0] = 0x03;
-                        let buf = &mut buf[1..];
+                    map.serialize_key(&1u8).unwrap();
+                    // TODO: what would be the syntax to have an array as value,
+                    // and e.g. write the supported versions individually, and
+                    // hence more easily configurably?
+                    map.serialize_value(&["FIDO_2_0", "U2F_V2"]).unwrap();
 
-                            // text(16)
-                            buf[0] = 0x70;
-                            let buf = &mut buf[1..];
-                            buf[..16].copy_from_slice(b"0123456789ABCDEF");
-                            let buf = &mut buf[16..];
+                    map.serialize_key(&3u8).unwrap();
+                    map.serialize_value("AAGUID0123456789").unwrap();
 
+                    // let _: () = map.end().unwrap();
+
+                    let writer = ser.into_inner();
+                    let size = writer.bytes_written();
+                    // hprintln!("using serde, wrote {} bytes: {:x?}", size, &self.buffer[..size]).ok();
 
                     let response = Response {
                         channel: request.channel,
                         command: request.command,
-                        length: 20 + 18,
+                        length: size as u16,
                     };
-                    for element in buf[..].iter_mut() {
+                    // zeroize the rest of the buffer, as always full packets are sent
+                    // TODO: implement on the packet level
+                    for element in self.buffer[size..].iter_mut() {
                         *element = 0;
                     }
                     self.state = State::Sending(response);
