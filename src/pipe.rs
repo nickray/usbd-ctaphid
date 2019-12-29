@@ -79,22 +79,25 @@ impl MessageState {
 /// If you change the order here, for instance python-fido2
 /// will no longer parse the entire authenticatorGetInfo
 #[derive(Copy,Clone,Debug,Eq,PartialEq,Serialize)]
-#[allow(non_snake_case)]
+#[serde(rename_all = "camelCase")]
 struct CtapOptions {
     rk: bool,
     up: bool,
-    // uv: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    uv: Option<bool>,
     plat: bool,
-    clientPin: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_pin: Option<bool>,
 }
 
 impl Default for CtapOptions {
     fn default() -> Self {
         Self {
-            plat: false,
-            rk: true,
-            clientPin: false,
+            rk: false,
             up: true,
+            uv: None,
+            plat: false,
+            client_pin: None,
         }
     }
 }
@@ -152,7 +155,7 @@ enum State {
     Receiving((Request, MessageState)),
 
     // the request message is ready, waiting for processing
-    RequestPending(Request),
+    Processing(Request),
 
     ResponsePending(Response),
     Sending((Response, MessageState)),
@@ -282,7 +285,7 @@ where Bus: UsbBus
                 // request fits in one packet
                 self.buffer[..request.length as usize].copy_from_slice(
                     &packet[7..][..request.length as usize]);
-                self.state = State::RequestPending(request);
+                self.state = State::Processing(request);
                 self.handle_request();
                 return;
             }
@@ -311,7 +314,7 @@ where Bus: UsbBus
                         let missing = request.length as usize - message_state.transmitted;
                         self.buffer[message_state.transmitted..payload_length]
                             .copy_from_slice(&packet[5..][..missing]);
-                        self.state = State::RequestPending(request);
+                        self.state = State::Processing(request);
                         self.handle_request();
                     }
                 },
@@ -324,11 +327,11 @@ where Bus: UsbBus
     }
 
     fn handle_request(&mut self) {
-        if let State::RequestPending(request) = self.state {
+        if let State::Processing(request) = self.state {
             // dispatch request further
             match request.command {
                 Command::Init => {
-                    // hprintln!("received INIT!").ok();
+                    hprintln!("command INIT!").ok();
                     // hprintln!("data: {:?}", &self.buffer[..request.length as usize]).ok();
                     match request.channel {
                         // broadcast channel ID - request for assignment
@@ -393,7 +396,7 @@ where Bus: UsbBus
 
                 Command::Cbor => {
                     // self.handle_cbor(request.length);
-                    // hprintln!("received CBOR!").ok();
+                    hprintln!("command CBOR!").ok();
                     let data = &self.buffer[..request.length as usize];
                     // hprintln!("data: {:?}", data).ok();
                     if data == &[4] {
@@ -416,7 +419,8 @@ where Bus: UsbBus
                         // TODO: what would be the syntax to have an array as value,
                         // and e.g. write the supported versions individually, and
                         // hence more easily configurably?
-                        map.serialize_value(&["U2F_V2", "FIDO_2_0"]).unwrap();
+                        // map.serialize_value(&["U2F_V2", "FIDO_2_0"]).unwrap();
+                        map.serialize_value(&["FIDO_2_0"]).unwrap();
 
                         // extensions
                         map.serialize_key(&2u8).unwrap();
