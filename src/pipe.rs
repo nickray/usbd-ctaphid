@@ -167,28 +167,107 @@ impl<'l> serde::Serialize for AuthenticatorInfo<'l>
     }
 }
 
+/// the authenticator API, consisting of "operations"
+#[derive(Copy,Clone,Debug,Eq,PartialEq)]
+pub enum Operation {
+    MakeCredential,
+    GetAssertion,
+    GetNextAssertion,
+    GetInfo,
+    ClientPin,
+    Reset,
+    /// vendors are assigned the range 0x40..=0x7f for custom operations
+    Vendor(VendorOperation),
+}
+
+impl Into<u8> for Operation {
+    fn into(self) -> u8 {
+        match self {
+            Operation::MakeCredential => 0x01,
+            Operation::GetAssertion => 0x02,
+            Operation::GetNextAssertion => 0x08,
+            Operation::GetInfo => 0x04,
+            Operation::ClientPin => 0x06,
+            Operation::Reset => 0x07,
+            Operation::Vendor(operation) => operation.into(),
+        }
+    }
+}
+
+impl Operation {
+    pub fn into_u8(self) -> u8 {
+        self.into()
+    }
+}
+
+/// Vendor CTAP2 operations, from 0x40 to 0x7f.
+#[derive(Copy,Clone,Debug,Eq,PartialEq)]
+pub struct VendorOperation(u8);
+
+impl VendorOperation {
+    pub const FIRST: u8 = 0x40;
+    pub const LAST: u8 = 0x7f;
+}
+
+impl TryFrom<u8> for VendorOperation {
+    type Error = ();
+
+    fn try_from(from: u8) -> core::result::Result<Self, ()> {
+        match from {
+            code if code >= Self::FIRST && code <= Self::LAST => Ok(VendorOperation(code)),
+            _ => Err(()),
+        }
+    }
+}
+
+impl Into<u8> for VendorOperation {
+    fn into(self) -> u8 {
+        self.0
+    }
+}
+
+impl TryFrom<u8> for Operation {
+    type Error = ();
+
+    fn try_from(from: u8) -> core::result::Result<Operation, ()> {
+        match from {
+            0x01 => Ok(Operation::MakeCredential),
+            0x02 => Ok(Operation::GetAssertion),
+            0x08 => Ok(Operation::GetNextAssertion),
+            0x04 => Ok(Operation::GetInfo),
+            0x06 => Ok(Operation::ClientPin),
+            0x07 => Ok(Operation::Reset),
+            code => Ok(Operation::Vendor(VendorOperation::try_from(code)?)),
+            // _ => Err(()),
+        }
+    }
+}
+
 #[derive(Copy,Clone,Debug,Eq,PartialEq)]
 pub enum Command {
     // mandatory for CTAP1
-    Ping = 0x01,
-    Msg = 0x03,
-    Init = 0x06,
-    Error = 0x3f,
+    Ping,
+    Msg,
+    Init,
+    Error,
 
     // optional
-    Wink = 0x08,
-    Lock = 0x04,
+    Wink,
+    Lock,
 
     // mandatory for CTAP2
-    Cbor = 0x10,
-    Cancel = 0x11,
-    KeepAlive = 0x3b,
+    Cbor,
+    Cancel,
+    KeepAlive,
 
-    // vendor
-    #[allow(dead_code)]
-    VendorFirst = 0x40,
-    #[allow(dead_code)]
-    VendorLast = 0x7f,
+    // vendor-assigned range from 0x40 to 0x7f
+    Vendor(VendorCommand),
+}
+
+impl Command {
+    pub fn into_u8(self) -> u8 {
+        self.into()
+    }
 }
 
 impl TryFrom<u8> for Command {
@@ -205,8 +284,52 @@ impl TryFrom<u8> for Command {
             0x10 => Ok(Command::Cbor),
             0x11 => Ok(Command::Cancel),
             0x3b => Ok(Command::KeepAlive),
+            code => Ok(Command::Vendor(VendorCommand::try_from(code)?)),
+        }
+    }
+}
+
+/// Vendor CTAPHID commands, from 0x40 to 0x7f.
+#[derive(Copy,Clone,Debug,Eq,PartialEq)]
+pub struct VendorCommand(u8);
+
+impl VendorCommand {
+    pub const FIRST: u8 = 0x40;
+    pub const LAST: u8 = 0x7f;
+}
+
+
+impl TryFrom<u8> for VendorCommand {
+    type Error = ();
+
+    fn try_from(from: u8) -> core::result::Result<Self, ()> {
+        match from {
+            code if code >= Self::FIRST && code <= Self::LAST => Ok(VendorCommand(code)),
             // TODO: replace with Command::Unknown and infallible Try
             _ => Err(()),
+        }
+    }
+}
+
+impl Into<u8> for VendorCommand {
+    fn into(self) -> u8 {
+        self.0
+    }
+}
+
+impl Into<u8> for Command {
+    fn into(self) -> u8 {
+        match self {
+            Command::Ping => 0x01,
+            Command::Msg => 0x03,
+            Command::Init => 0x06,
+            Command::Error => 0x3f,
+            Command::Wink => 0x08,
+            Command::Lock => 0x04,
+            Command::Cbor => 0x10,
+            Command::Cancel => 0x11,
+            Command::KeepAlive => 0x3b,
+            Command::Vendor(command) => command.into(),
         }
     }
 }
@@ -466,10 +589,12 @@ where Bus: UsbBus
                 Command::Cbor => {
                     hprintln!("command CBOR!").ok();
                     self.handle_cbor(request);
-                }
+                },
 
                 // TODO: handle other requests
-                _ => {},
+                _ => {
+                    hprintln!("unknown command {:?}", request.command).ok();
+                },
             }
         }
     }
@@ -478,32 +603,107 @@ where Bus: UsbBus
         let data = &self.buffer[..request.length as usize];
         // hprintln!("data: {:?}", data).ok();
 
-        if data == &[4] {
-            hprintln!("received authenticatorGetInfo").ok();
+        if data.len() < 1 {
+            return;
+        }
 
-            let authenticator_info = AuthenticatorInfo {
-                versions: &[],//&["FIDO_2_0"], // &["U2F_V2", "FIDO_2_0"],
-                extensions: None, // Some(&["hmac-secret"]),
-                aaguid: b"AAGUID0123456789",
-                // options: None, // Some(CtapOptions::default()),
-                options: Some(CtapOptions::default()),
-                max_msg_size: Some(MESSAGE_SIZE),
-                pin_protocols: None, // Some(&[1]),
-            };
+        let operation = match Operation::try_from(data[0]) {
+            Ok(operation) => {
+                hprintln!("Operation  {:?}", &operation).ok();
+                operation
+            },
+            Err(_) => {
+                hprintln!("Unknown operation code {:x?}", data[0]).ok();
+                return;
+            },
+        };
 
-            // status: 0  = success;
-            self.buffer[0] = 0;
-            // actual payload
-            let writer = serde_cbor::ser::SliceWrite::new(&mut self.buffer[1..]);
-            let mut ser = serde_cbor::Serializer::new(writer);
-            authenticator_info.serialize(&mut ser).unwrap();
+        match operation {
+            Operation::MakeCredential => {
+                hprintln!("received authenticatorMakeCredential").ok();
+                hprintln!("data = {:x?}", &data[1..]).ok();
+                // Example: b'\xa5\x01X -T\x18\xa8\xc1\xd3&\x90\xbf\x0f?\x11S/\x9f\xeeo\x8f\xde\xc8\xc7|\x82\xf3V\xdd\xc6\xe5\xce\x03\xe6k\x02\xa2bidkexample.orgdnamelexample site\x03\xa2bidDtheydnamelexample user\x0 4\x81\xa2calg&dtypejpublic-key\x05\x80'
+                //
+                // Generated with: cl = solo.client.find_all()[0] and then intercepting
+                // `request` in `fido2.ctap2.CTAP2.send_cbor`.
+                // Deserialized:
+                // {1: b'-T\x18\xa8\xc1\xd3&\x90\xbf\x0f?\x11S/\x9f\xeeo\x8f\xde\xc8\xc7|\x82\xf3V\xdd\xc6\xe5\xce\x03\xe6k',
+                //  2: {'id': 'example.org', 'name': 'example site'},
+                //  3: {'id': b'they', 'name': 'example user'},
+                //  4: [{'alg': -7, 'type': 'public-key'}],
+                //  5: []}
+                //
+                // Example: [
+                //  a4, 1, 44, 31, 32, 33, 34, 2, 73, 68, 74, 74,
+                //  70, 73, 3a, 2f, 2f, 79, 61, 6d, 6e, 6f, 72, 64,
+                //  2e, 63, 6f, 6d, 3, 67, 6e, 69, 63, 6b, 72, 61,
+                //  79, 4, 81, a2, 63, 61, 6c, 67, 62, 2d, 37, 64, 74, 79,
+                //  70, 65, 6a, 70, 75, 62, 6c, 69, 63, 2d, 6b, 65, 79]
+                //
+                //  Can also generate with:
+                //  dev = fido2.ctap2.CTAP2(next(fido2.hid.CtapHidDevice.list_devices()))
+                //  dev.make_credential(
+                //      b"1234",
+                //      {"id": "https://yamnord.com"},
+                //      {"id": "nickray"},
+                //      [{"type": "public-key", "alg": -7}])
+                //
+                // Deserialized:
+                // {1: b'1234',
+                //  2: {'id': 'https://yamnord.com'},
+                //  3: {'id': 'nickray'},
+                //  4: [{'alg': -7, 'type': 'public-key'}]}
+                //
+                //  Actually...
+                //  1 = clientDataHash = byte array, SHA-256 digest (--> 32 bytes)
+                //  2 = PublicKeyCredentialRpEntity = { "id": "https://yamnord.com", ...optional }
+                //  3 = PublicKeyCredentialUserEntity = { "id": "nickray", ...optional }
+                //          e.g.: "displayName": "Nicolas Stalder"
+                //  4 = sequence of CBOR maps consisting of pair
+                //        - PublicKeyCredentialType: string
+                //        - integer: algorithm from IANA COSE algorithms
+                //          https://www.iana.org/assignments/cose/cose.xhtml#algorithms
+                //      sorted descending by RP preference, we want to support:
+                //        -7 = ES256 = ECDSA with SHA-256, picking NIST P-256 curve
+                //        -8 = EdDSA, picking Ed25519 curve
+                //
+                // TODO: deserialize CBOR to nice Rust types, call "app" via trait method
+                // TODO: do we poll the app for processed result? does the app callback us?
+                return;
+            },
 
-            let writer = ser.into_inner();
-            let size = 1 + writer.bytes_written();
-            hprintln!("using serde, wrote {} bytes: {:x?}",
-                      size, &self.buffer[..size]).ok();
-            let response = Response::from_request_and_size(request, size);
-            self.start_sending(response);
+            Operation::GetInfo => {
+                hprintln!("received authenticatorGetInfo").ok();
+
+                let authenticator_info = AuthenticatorInfo {
+                    versions: &[],//&["FIDO_2_0"], // &["U2F_V2", "FIDO_2_0"],
+                    extensions: None, // Some(&["hmac-secret"]),
+                    aaguid: b"AAGUID0123456789",
+                    // options: None, // Some(CtapOptions::default()),
+                    options: Some(CtapOptions::default()),
+                    max_msg_size: Some(MESSAGE_SIZE),
+                    pin_protocols: None, // Some(&[1]),
+                };
+
+                // status: 0  = success;
+                self.buffer[0] = 0;
+                // actual payload
+                let writer = serde_cbor::ser::SliceWrite::new(&mut self.buffer[1..]);
+                let mut ser = serde_cbor::Serializer::new(writer);
+                authenticator_info.serialize(&mut ser).unwrap();
+
+                let writer = ser.into_inner();
+                let size = 1 + writer.bytes_written();
+                hprintln!("using serde, wrote {} bytes: {:x?}",
+                          size, &self.buffer[..size]).ok();
+                let response = Response::from_request_and_size(request, size);
+                self.start_sending(response);
+            },
+
+            _ => {
+                hprintln!("Operation {:?} not implemented", operation).ok();
+                return;
+            },
         }
     }
 
@@ -520,7 +720,8 @@ where Bus: UsbBus
                 // zeros leftover bytes
                 let mut packet = [0u8; PACKET_SIZE];
                 packet[..4].copy_from_slice(&response.channel.to_be_bytes());
-                packet[4] = response.command as u8 | 0x80;
+                // packet[4] = response.command.into() | 0x80u8;
+                packet[4] = response.command.into_u8() | 0x80;
                 packet[5..7].copy_from_slice(&response.length.to_be_bytes());
 
                 let fits_in_one_packet = 7 + response.length as usize <= PACKET_SIZE;
