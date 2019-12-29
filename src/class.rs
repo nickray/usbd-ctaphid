@@ -74,31 +74,36 @@ const INTERFACE_PROTOCOL_NONE: u8 = 0x0;
 const HID_DESCRIPTOR: u8 = 0x21;
 const HID_REPORT_DESCRIPTOR: u8 = 0x22;
 
-const FIDO_HID_REPORT_DESCRIPTOR_LENGTH: usize = 34;
 // cf. https://git.io/Jebh8
 // integers are little-endian
+const FIDO_HID_REPORT_DESCRIPTOR_LENGTH: usize = 34;
 const FIDO_HID_REPORT_DESCRIPTOR: [u8; FIDO_HID_REPORT_DESCRIPTOR_LENGTH] = [
-    0x06, 0xD0, 0xF1,  // Usage page (vendor defined): 0xF1D0 (FIDO_USAGE_PAGE)
-    0x09, 0x01,        // Usage ID (vendor defined): 0x1 (FIDO_USAGE_CTAPHID)
-    0xA1, 0x01,        // Collection (application)
+    // Usage page (vendor defined): 0xF1D0 (FIDO_USAGE_PAGE)
+    0x06, 0xD0, 0xF1,
+    // Usage ID (vendor defined): 0x1 (FIDO_USAGE_CTAPHID)
+    0x09, 0x01,
 
-    // The Input report
-    0x09, 0x03,        // Usage ID - vendor defined: FIDO_USAGE_DATA_IN
-    0x15, 0x00,        // Logical Minimum (0)
-    0x26, 0xFF, 0x00,  // Logical Maximum (255)
-    0x75, 0x08,        // Report Size (8 bits)
-    0x95, PACKET_SIZE as u8, // Report Count (64 fields)
-    0x81, 0x08,        // Input (Data, Variable, Absolute)
+    // Collection (application)
+    0xA1, 0x01,
 
-    // The Output report
-    0x09, 0x04,        // Usage ID - vendor defined: FIDO_USAGE_DATA_OUT
-    0x15, 0x00,        // Logical Minimum (0)
-    0x26, 0xFF, 0x00,  // Logical Maximum (255)
-    0x75, 0x08,        // Report Size (8 bits)
-    0x95, PACKET_SIZE as u8, // Report Count (64 fields)
-    0x91, 0x08,        // Output (Data, Variable, Absolute)
+        // The Input report
+        0x09, 0x03,        // Usage ID - vendor defined: FIDO_USAGE_DATA_IN
+        0x15, 0x00,        // Logical Minimum (0)
+        0x26, 0xFF, 0x00,  // Logical Maximum (255)
+        0x75, 0x08,        // Report Size (8 bits)
+        0x95, PACKET_SIZE as u8, // Report Count (64 fields)
+        0x81, 0x08,        // Input (Data, Variable, Absolute)
 
-    0xC0,              // EndCollection
+        // The Output report
+        0x09, 0x04,        // Usage ID - vendor defined: FIDO_USAGE_DATA_OUT
+        0x15, 0x00,        // Logical Minimum (0)
+        0x26, 0xFF, 0x00,  // Logical Maximum (255)
+        0x75, 0x08,        // Report Size (8 bits)
+        0x95, PACKET_SIZE as u8, // Report Count (64 fields)
+        0x91, 0x08,        // Output (Data, Variable, Absolute)
+
+    // EndCollection
+    0xC0,
 ];
 
 // see hid1_11.pdf, section 7.2, p. 50
@@ -201,7 +206,8 @@ where
                 control::Request::GET_DESCRIPTOR => {
                     xfer.accept(|data| {
                         assert!(data.len() >= FIDO_HID_REPORT_DESCRIPTOR_LENGTH);
-                        data[..FIDO_HID_REPORT_DESCRIPTOR_LENGTH].copy_from_slice(&FIDO_HID_REPORT_DESCRIPTOR);
+                        data[..FIDO_HID_REPORT_DESCRIPTOR_LENGTH]
+                            .copy_from_slice(&FIDO_HID_REPORT_DESCRIPTOR);
                         Ok(FIDO_HID_REPORT_DESCRIPTOR_LENGTH)
                     }).ok();
                 },

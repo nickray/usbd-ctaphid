@@ -50,6 +50,16 @@ struct Response {
     length: u16,
 }
 
+impl Response {
+    pub fn from_request_and_size(request: Request, size: usize) -> Self {
+        Self {
+            channel: request.channel,
+            command: request.command,
+            length: size as u16,
+        }
+    }
+}
+
 #[derive(Copy,Clone,Debug,Eq,PartialEq)]
 struct MessageState {
     // sequence number of next continuation packet
@@ -80,7 +90,7 @@ impl MessageState {
 /// will no longer parse the entire authenticatorGetInfo
 #[derive(Copy,Clone,Debug,Eq,PartialEq,Serialize)]
 #[serde(rename_all = "camelCase")]
-struct CtapOptions {
+pub struct CtapOptions {
     rk: bool,
     up: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -99,6 +109,61 @@ impl Default for CtapOptions {
             plat: false,
             client_pin: None,
         }
+    }
+}
+
+#[derive(Clone,Debug,Eq,PartialEq)]
+pub struct AuthenticatorInfo<'l> {
+    versions: &'l[&'l str],
+    extensions: Option<&'l[&'l str]>,
+    aaguid: &'l [u8; 16],
+    options: Option<CtapOptions>,
+    // TODO: this is actually the constant MESSAGE_SIZE
+    max_msg_size: Option<usize>,
+    pin_protocols: Option<&'l[u8]>,
+}
+
+impl<'l> serde::Serialize for AuthenticatorInfo<'l>
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let len = 2usize
+            + self.extensions.is_some() as usize
+            + self.options.is_some() as usize
+            + self.max_msg_size.is_some() as usize
+            + self.pin_protocols.is_some() as usize
+        ;
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(len))?;
+
+        // 1
+        map.serialize_entry(&1, self.versions)?;
+        // 2
+        match self.extensions {
+            Some(extensions) => { map.serialize_entry(&2, extensions)?; },
+            None => {},
+        }
+        // 3
+        map.serialize_entry(&3, &serde_bytes::Bytes::new(self.aaguid))?;
+        // 4
+        match self.options {
+            Some(options) => { map.serialize_entry(&4, &options)?; },
+            None => {},
+        }
+        // 5
+        match self.max_msg_size {
+            Some(max_msg_size) => { map.serialize_entry(&5, &max_msg_size)?; },
+            None => {},
+        }
+        // 6
+        match self.pin_protocols {
+            Some(pin_protocols) => { map.serialize_entry(&6, &pin_protocols)?; },
+            None => {},
+        }
+
+        map.end()
     }
 }
 
@@ -140,6 +205,7 @@ impl TryFrom<u8> for Command {
             0x10 => Ok(Command::Cbor),
             0x11 => Ok(Command::Cancel),
             0x3b => Ok(Command::KeepAlive),
+            // TODO: replace with Command::Unknown and infallible Try
             _ => Err(()),
         }
     }
@@ -154,7 +220,10 @@ enum State {
     // if request payload data is larger than one packet
     Receiving((Request, MessageState)),
 
-    // the request message is ready, waiting for processing
+    // the request message is ready, need to dispatch to "app"
+    // Dispatching(Request)
+
+    // the request message is dispatched to app, waiting for it to be processed
     Processing(Request),
 
     ResponsePending(Response),
@@ -172,6 +241,7 @@ where Bus: UsbBus
     buffer: [u8; MESSAGE_SIZE],
 
     // we assign channel IDs one by one, this is the one last assigned
+    // TODO: move into "app"
     last_channel: u32,
 
 }
@@ -257,36 +327,35 @@ where Bus: UsbBus
                 Err(_) => { return; },
             };
 
-            let request = Request {
-                channel,
-                command,
-                // can't actually fail
-                length: u16::from_be_bytes(packet[5..7].try_into().unwrap()),
-            };
+            // can't actually fail
+            let length = u16::from_be_bytes(packet[5..][..2].try_into().unwrap());
 
+            let request = Request { channel, command, length };
             // hprintln!("request is {:?}", &request).ok();
 
-            if request.length > MESSAGE_SIZE as u16 {
+            if length > MESSAGE_SIZE as u16 {
                 // non-conforming client - we disregard it
+                // TODO: error msg-too-long
                 return;
             }
 
             // TODO: add some checks that request.length is OK.
             // e.g., CTAPHID_INIT should have payload of length 8.
 
-            if request.length > PACKET_SIZE as u16 - 7 {
+            if length > PACKET_SIZE as u16 - 7 {
                 // store received part of payload,
                 // prepare for continuation packets
-                self.buffer[..PACKET_SIZE - 7].copy_from_slice(&packet[7..]);
+                self.buffer[..PACKET_SIZE - 7]
+                    .copy_from_slice(&packet[7..]);
                 self.state = State::Receiving((request, MessageState::default()));
                 // we're done... wait for next packet
                 return;
             } else {
                 // request fits in one packet
-                self.buffer[..request.length as usize].copy_from_slice(
-                    &packet[7..][..request.length as usize]);
+                self.buffer[..length as usize]
+                    .copy_from_slice(&packet[7..][..length as usize]);
                 self.state = State::Processing(request);
-                self.handle_request();
+                self.dispatch_request();
                 return;
             }
         } else {
@@ -315,7 +384,7 @@ where Bus: UsbBus
                         self.buffer[message_state.transmitted..payload_length]
                             .copy_from_slice(&packet[5..][..missing]);
                         self.state = State::Processing(request);
-                        self.handle_request();
+                        self.dispatch_request();
                     }
                 },
                 _ => {
@@ -326,7 +395,8 @@ where Bus: UsbBus
         }
     }
 
-    fn handle_request(&mut self) {
+    fn dispatch_request(&mut self) {
+        // TODO: can we guarantee only being called in this state?
         if let State::Processing(request) = self.state {
             // dispatch request further
             match request.command {
@@ -373,106 +443,67 @@ where Bus: UsbBus
                         _ => {
                             // this is assumedly the active channel,
                             // already allocated to a client
+                            // TODO: "reset"
                         }
                     }
                 },
 
                 Command::Ping => {
                     hprintln!("received PING!").ok();
-                    hprintln!("data: {:?}", &self.buffer[..request.length as usize]).ok();
-                    self.state = State::Idle;
+                    // hprintln!("data: {:?}", &self.buffer[..request.length as usize]).ok();
+                    let response = Response::from_request_and_size(request, request.length as usize);
+                    self.start_sending(response);
                 },
 
                 Command::Wink => {
                     hprintln!("received WINK!").ok();
-                    hprintln!("data: {:?}", &self.buffer[..request.length as usize]).ok();
-                    let response = Response {
-                        channel: request.channel,
-                        command: request.command,
-                        length: 0,
-                    };
+                    // TODO: request.length should be zero
+                    // TODO: callback "app"
+                    let response = Response::from_request_and_size(request, 0);
                     self.start_sending(response);
                 },
 
                 Command::Cbor => {
-                    // self.handle_cbor(request.length);
                     hprintln!("command CBOR!").ok();
-                    let data = &self.buffer[..request.length as usize];
-                    // hprintln!("data: {:?}", data).ok();
-                    if data == &[4] {
-                        hprintln!("received authenticatorGetInfo").ok();
-
-                        use serde::ser::Serializer;
-                        use serde::ser::SerializeMap;
-
-                        let writer = serde_cbor::ser::SliceWrite::new(&mut self.buffer[..]);
-                        let mut ser = serde_cbor::Serializer::new(writer);//.packed_format();
-
-                        // status: 0 = success
-                        ser.serialize_u8(0).unwrap();
-
-                        // now the actual CBOR payload
-                        let mut map = ser.serialize_map(Some(6)).unwrap();
-
-                        // versions
-                        map.serialize_key(&1u8).unwrap();
-                        // TODO: what would be the syntax to have an array as value,
-                        // and e.g. write the supported versions individually, and
-                        // hence more easily configurably?
-                        // map.serialize_value(&["U2F_V2", "FIDO_2_0"]).unwrap();
-                        map.serialize_value(&["FIDO_2_0"]).unwrap();
-
-                        // extensions
-                        map.serialize_key(&2u8).unwrap();
-                        map.serialize_value(&["hmac-secret"]).unwrap();
-
-                        // aaguid
-                        map.serialize_key(&3u8).unwrap();
-                        // NB: byte slices get serialized as collection of u8, which
-                        // is not what we want here
-                        map.serialize_value(&serde_bytes::Bytes::new(b"AAGUID0123456789")).unwrap();
-                        // map.serialize_value(b"AAGUID0123456789").unwrap();
-
-                        // options
-                        map.serialize_key(&4u8).unwrap();
-                        let options = CtapOptions::default();
-                        // let mut b = [0u8; 128];
-                        // let w = serde_cbor::ser::SliceWrite::new(&mut b[..]);
-                        // let mut s = serde_cbor::Serializer::new(w);//.packed_format();
-                        // options.serialize(&mut s).unwrap();
-                        // let w = s.into_inner();
-                        // let sz = w.bytes_written();
-                        // hprintln!("options cbor = {:x?}", &w.into_inner()[..sz]).ok();
-
-                        // danger, danger: these options, too, need to be canonical CBOR
-                        map.serialize_value(&options).unwrap();
-
-                        // maxMsgSize
-                        map.serialize_key(&5u8).unwrap();
-                        map.serialize_value(&MESSAGE_SIZE).unwrap();
-
-                        // pinProtocols
-                        map.serialize_key(&6).unwrap();
-                        map.serialize_value(&[1]).unwrap();
-
-                        // let _: () = map.end().unwrap();
-
-                        let writer = ser.into_inner();
-                        let size = writer.bytes_written();
-                        // hprintln!("using serde, wrote {} bytes: {:x?}", size, &self.buffer[..size]).ok();
-
-                        let response = Response {
-                            channel: request.channel,
-                            command: request.command,
-                            length: size as u16,
-                        };
-                        self.start_sending(response);
-                    }
+                    self.handle_cbor(request);
                 }
 
                 // TODO: handle other requests
                 _ => {},
             }
+        }
+    }
+
+    fn handle_cbor(&mut self, request: Request) {
+        let data = &self.buffer[..request.length as usize];
+        // hprintln!("data: {:?}", data).ok();
+
+        if data == &[4] {
+            hprintln!("received authenticatorGetInfo").ok();
+
+            let authenticator_info = AuthenticatorInfo {
+                versions: &[],//&["FIDO_2_0"], // &["U2F_V2", "FIDO_2_0"],
+                extensions: None, // Some(&["hmac-secret"]),
+                aaguid: b"AAGUID0123456789",
+                // options: None, // Some(CtapOptions::default()),
+                options: Some(CtapOptions::default()),
+                max_msg_size: Some(MESSAGE_SIZE),
+                pin_protocols: None, // Some(&[1]),
+            };
+
+            // status: 0  = success;
+            self.buffer[0] = 0;
+            // actual payload
+            let writer = serde_cbor::ser::SliceWrite::new(&mut self.buffer[1..]);
+            let mut ser = serde_cbor::Serializer::new(writer);
+            authenticator_info.serialize(&mut ser).unwrap();
+
+            let writer = ser.into_inner();
+            let size = 1 + writer.bytes_written();
+            hprintln!("using serde, wrote {} bytes: {:x?}",
+                      size, &self.buffer[..size]).ok();
+            let response = Response::from_request_and_size(request, size);
+            self.start_sending(response);
         }
     }
 
@@ -492,10 +523,10 @@ where Bus: UsbBus
                 packet[4] = response.command as u8 | 0x80;
                 packet[5..7].copy_from_slice(&response.length.to_be_bytes());
 
-                let fits_in_one_packet = response.length as usize <= PACKET_SIZE - 7;
+                let fits_in_one_packet = 7 + response.length as usize <= PACKET_SIZE;
                 if fits_in_one_packet {
-                    packet[7..][..response.length as usize].copy_from_slice(
-                        &self.buffer[..response.length as usize]);
+                    packet[7..][..response.length as usize]
+                        .copy_from_slice( &self.buffer[..response.length as usize]);
                     self.state = State::Idle;
                 } else {
                     packet[7..].copy_from_slice(&self.buffer[..PACKET_SIZE - 7]);
@@ -539,10 +570,10 @@ where Bus: UsbBus
 
                 let sent = message_state.transmitted;
                 let remaining = response.length as usize - sent;
-                let last_packet = remaining <= PACKET_SIZE - 5;
+                let last_packet = 5 + remaining <= PACKET_SIZE;
                 if last_packet {
                     packet[5..][..remaining].copy_from_slice(
-                        &self.buffer[message_state.transmitted..response.length as usize]);
+                        &self.buffer[message_state.transmitted..][..remaining]);
                 } else {
                     packet[5..].copy_from_slice(
                         &self.buffer[message_state.transmitted..][..PACKET_SIZE - 5]);

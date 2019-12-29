@@ -11,7 +11,9 @@ https://fidoalliance.org/specs/fido-v2.0-ps-20190130/fido-client-to-authenticato
 pub mod constants;
 pub mod class;
 pub use class::CtapHid;
-mod pipe;
+pub mod interfaces;
+pub mod macros;
+pub mod pipe;
 
 
 // #[cfg(not(feature = "logging"))]
