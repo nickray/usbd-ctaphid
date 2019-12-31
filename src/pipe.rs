@@ -15,7 +15,7 @@ No state is maintained between transactions.
 use core::convert::TryInto;
 use core::convert::TryFrom;
 use cortex_m_semihosting::hprintln;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use usb_device::{
     bus::{UsbBus},
     endpoint::{EndpointAddress, EndpointIn, EndpointOut},
@@ -26,7 +26,6 @@ use usb_device::{
 
 use crate::{
     authenticator::Api as AuthenticatorApi,
-    bytevec::ByteVec,
     constants::{
         // 7609
         MESSAGE_SIZE,
@@ -34,8 +33,8 @@ use crate::{
         PACKET_SIZE,
     },
     types::{
-        AuthenticatorInfo,
-        CtapOptions,
+        // AuthenticatorInfo,
+        MakeCredentialParameters,
     },
 };
 
@@ -554,56 +553,40 @@ where
         match operation {
             Operation::MakeCredential => {
                 hprintln!("received authenticatorMakeCredential").ok();
-                hprintln!("data = {:x?}", &data[1..]).ok();
-                // Example: b'\xa5\x01X -T\x18\xa8\xc1\xd3&\x90\xbf\x0f?\x11S/\x9f\xeeo\x8f\xde\xc8\xc7|\x82\xf3V\xdd\xc6\xe5\xce\x03\xe6k\x02\xa2bidkexample.orgdnamelexample site\x03\xa2bidDtheydnamelexample user\x0 4\x81\xa2calg&dtypejpublic-key\x05\x80'
+                // hprintln!("data:: {:x?}", &self.buffer[1..request.length as usize]).ok();
+
+                // can at least handle the output of
                 //
-                // Generated with: cl = solo.client.find_all()[0] and then intercepting
-                // `request` in `fido2.ctap2.CTAP2.send_cbor`.
-                // Deserialized:
-                // {1: b'-T\x18\xa8\xc1\xd3&\x90\xbf\x0f?\x11S/\x9f\xeeo\x8f\xde\xc8\xc7|\x82\xf3V\xdd\xc6\xe5\xce\x03\xe6k',
-                //  2: {'id': 'example.org', 'name': 'example site'},
-                //  3: {'id': b'they', 'name': 'example user'},
-                //  4: [{'alg': -7, 'type': 'public-key'}],
-                //  5: []}
+                // >>> dev = fido2.ctap2.CTAP2(next(fido2.hid.CtapHidDevice.list_devices()))
+                // >>> dev.make_credential(
+                //   b"1234567890ABCDEF",
+                //   {"id": "https://yamnord.com"},
+                //   {"id": b"nickray"},
+                //   [{"type": "public-key", "alg": -7}]
+                // )
                 //
-                // Example: [
-                //  a4, 1, 44, 31, 32, 33, 34, 2, 73, 68, 74, 74,
-                //  70, 73, 3a, 2f, 2f, 79, 61, 6d, 6e, 6f, 72, 64,
-                //  2e, 63, 6f, 6d, 3, 67, 6e, 69, 63, 6b, 72, 61,
-                //  79, 4, 81, a2, 63, 61, 6c, 67, 62, 2d, 37, 64, 74, 79,
-                //  70, 65, 6a, 70, 75, 62, 6c, 69, 63, 2d, 6b, 65, 79]
+                // which is b'\x01\xa4\x01P1234567890ABCDEF\x02\xa1bidshttps://yamnord.com\
+                //            \x03\xa1bidGnickray\x04\x81\xa2calg&dtypejpublic-key'
                 //
-                //  Can also generate with:
-                //  dev = fido2.ctap2.CTAP2(next(fido2.hid.CtapHidDevice.list_devices()))
-                //  dev.make_credential(
-                //      b"1234",
-                //      {"id": "https://yamnord.com"},
-                //      {"id": "nickray"},
-                //      [{"type": "public-key", "alg": -7}])
-                //
-                // Deserialized:
-                // {1: b'1234',
-                //  2: {'id': 'https://yamnord.com'},
-                //  3: {'id': 'nickray'},
-                //  4: [{'alg': -7, 'type': 'public-key'}]}
-                //
-                //  Actually...
-                //  1 = clientDataHash = byte array, SHA-256 digest (--> 32 bytes)
-                //  2 = PublicKeyCredentialRpEntity = { "id": "https://yamnord.com", ...optional }
-                //  3 = PublicKeyCredentialUserEntity = { "id": "nickray", ...optional }
-                //          e.g.: "displayName": "Nicolas Stalder"
-                //  4 = sequence of CBOR maps consisting of pair
-                //        - PublicKeyCredentialType: string
-                //        - integer: algorithm from IANA COSE algorithms
-                //          https://www.iana.org/assignments/cose/cose.xhtml#algorithms
-                //      sorted descending by RP preference, we want to support:
-                //        -7 = ES256 = ECDSA with SHA-256, picking NIST P-256 curve (curve 1)
+                // Note: PublicKeyCredentialParameters is in descending preference.
+                // Want to eventually support:
                 //        -8 = EdDSA, picking Ed25519 curve (curve 6)
-                //      see fido2/cose.py
-                //
-                // TODO: deserialize CBOR to nice Rust types, call "app" via trait method
-                // TODO: do we poll the app for processed result? does the app callback us?
-                return;
+                //        -7 = ES256 = ECDSA with SHA-256, picking NIST P-256 curve (curve 1)
+                // The integer refers to https://www.iana.org/assignments/cose/cose.xhtml#algorithms
+
+                let mut deserializer = serde_cbor::de::Deserializer::from_mut_slice(&mut self.buffer[1..])
+                    .packed_starts_with(1);
+                let params: MakeCredentialParameters =
+                    serde::de::Deserialize::deserialize(&mut deserializer).unwrap();
+
+                hprintln!("params: {:?}", &params).ok();
+
+                let _credential = self.authenticator.get_info();
+
+                // TOOD: ...
+                self.buffer[0] = 0;
+                let response = Response::from_request_and_size(request, 1);
+                self.start_sending(response);
             },
 
             Operation::GetInfo => {

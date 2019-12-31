@@ -1,3 +1,4 @@
+use cortex_m_semihosting::hprintln;
 use core::{
     cmp::Ordering,
     fmt::{self, Debug},
@@ -5,7 +6,8 @@ use core::{
     ops::{Deref, DerefMut},
     marker::PhantomData,
 };
-use heapless::{ArrayLength, Vec};
+pub use heapless::ArrayLength;
+use heapless::Vec;
 use serde::{
     ser::{Serialize, Serializer},
     de::{
@@ -18,30 +20,30 @@ use serde::{
 };
 
 #[derive(Clone, Default, Eq/*, Ord*/)]
-pub struct ByteVec<N: ArrayLength<u8>> {
+pub struct Bytes<N: ArrayLength<u8>> {
     bytes: Vec<u8, N>,
 }
 
-impl<N: ArrayLength<u8>> ByteVec<N> {
+impl<N: ArrayLength<u8>> Bytes<N> {
 
-    /// Construct a new, empty `ByteVec<N>`.
+    /// Construct a new, empty `Bytes<N>`.
     pub fn new() -> Self {
-        ByteVec::from(Vec::new())
+        Bytes::from(Vec::new())
     }
 
-    // /// Construct a new, empty `ByteVec<N>` with the specified capacity.
+    // /// Construct a new, empty `Bytes<N>` with the specified capacity.
     // pub fn with_capacity(cap: usize) -> Self {
-    //     ByteVec<N>::from(Vec::with_capacity(cap))
+    //     Bytes<N>::from(Vec::with_capacity(cap))
     // }
 
-    /// Wrap existing bytes in a `ByteVec<N>`.
+    /// Wrap existing bytes in a `Bytes<N>`.
     pub fn from<T: Into<Vec<u8, N>>>(bytes: T) -> Self {
-        ByteVec {
+        Bytes {
             bytes: bytes.into(),
         }
     }
 
-    /// Unwrap the vector of byte underlying this `ByteVec<N>`.
+    /// Unwrap the vector of byte underlying this `Bytes<N>`.
     pub fn into_vec(self) -> Vec<u8, N> {
         self.bytes
     }
@@ -52,25 +54,38 @@ impl<N: ArrayLength<u8>> ByteVec<N> {
     }
 }
 
-impl<N: ArrayLength<u8>> Debug for ByteVec<N> {
+impl<N: ArrayLength<u8>> Debug for Bytes<N> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        Debug::fmt(&self.bytes, f)
+
+        // TODO: There has to be a better way :'-)
+
+        use core::ascii::escape_default;
+        f.write_str("b'")?;
+        for byte in &self.bytes {
+            for ch in escape_default(*byte) {
+                // Debug::fmt(unsafe { core::str::from_utf8_unchecked(&[ch]) }, f)?;
+                f.write_str(unsafe { core::str::from_utf8_unchecked(&[ch]) })?;
+                // f.write(&ch);
+            }
+        }
+        f.write_str("'")?;
+        Ok(())
     }
 }
 
-impl<N: ArrayLength<u8>> AsRef<[u8]> for ByteVec<N> {
+impl<N: ArrayLength<u8>> AsRef<[u8]> for Bytes<N> {
     fn as_ref(&self) -> &[u8] {
         &self.bytes
     }
 }
 
-impl<N: ArrayLength<u8>> AsMut<[u8]> for ByteVec<N> {
+impl<N: ArrayLength<u8>> AsMut<[u8]> for Bytes<N> {
     fn as_mut(&mut self) -> &mut [u8] {
         &mut self.bytes
     }
 }
 
-impl<N: ArrayLength<u8>> Deref for ByteVec<N> {
+impl<N: ArrayLength<u8>> Deref for Bytes<N> {
     type Target = Vec<u8, N>;
 
     fn deref(&self) -> &Self::Target {
@@ -78,25 +93,25 @@ impl<N: ArrayLength<u8>> Deref for ByteVec<N> {
     }
 }
 
-impl<N: ArrayLength<u8>> DerefMut for ByteVec<N> {
+impl<N: ArrayLength<u8>> DerefMut for Bytes<N> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.bytes
     }
 }
 
-// impl Borrow<Bytes> for ByteVec<N> {
+// impl Borrow<Bytes> for Bytes<N> {
 //     fn borrow(&self) -> &Bytes {
 //         Bytes::new(&self.bytes)
 //     }
 // }
 
-// impl BorrowMut<Bytes> for ByteVec<N> {
+// impl BorrowMut<Bytes> for Bytes<N> {
 //     fn borrow_mut(&mut self) -> &mut Bytes {
 //         unsafe { &mut *(&mut self.bytes as &mut [u8] as *mut [u8] as *mut Bytes) }
 //     }
 // }
 
-impl<N: ArrayLength<u8>, Rhs> PartialEq<Rhs> for ByteVec<N>
+impl<N: ArrayLength<u8>, Rhs> PartialEq<Rhs> for Bytes<N>
 where
     Rhs: ?Sized + AsRef<[u8]>,
 {
@@ -105,7 +120,7 @@ where
     }
 }
 
-impl<N: ArrayLength<u8>, Rhs> PartialOrd<Rhs> for ByteVec<N>
+impl<N: ArrayLength<u8>, Rhs> PartialOrd<Rhs> for Bytes<N>
 where
     Rhs: ?Sized + AsRef<[u8]>,
 {
@@ -114,13 +129,13 @@ where
     }
 }
 
-impl<N: ArrayLength<u8>> Hash for ByteVec<N> {
+impl<N: ArrayLength<u8>> Hash for Bytes<N> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.bytes.hash(state);
     }
 }
 
-impl<N: ArrayLength<u8>> IntoIterator for ByteVec<N> {
+impl<N: ArrayLength<u8>> IntoIterator for Bytes<N> {
     type Item = u8;
     type IntoIter = <Vec<u8, N> as IntoIterator>::IntoIter;
 
@@ -129,7 +144,7 @@ impl<N: ArrayLength<u8>> IntoIterator for ByteVec<N> {
     }
 }
 
-impl<'a, N: ArrayLength<u8>> IntoIterator for &'a ByteVec<N> {
+impl<'a, N: ArrayLength<u8>> IntoIterator for &'a Bytes<N> {
     type Item = &'a u8;
     type IntoIter = <&'a [u8] as IntoIterator>::IntoIter;
 
@@ -138,7 +153,7 @@ impl<'a, N: ArrayLength<u8>> IntoIterator for &'a ByteVec<N> {
     }
 }
 
-impl<'a, N: ArrayLength<u8>> IntoIterator for &'a mut ByteVec<N> {
+impl<'a, N: ArrayLength<u8>> IntoIterator for &'a mut Bytes<N> {
     type Item = &'a mut u8;
     type IntoIter = <&'a mut [u8] as IntoIterator>::IntoIter;
 
@@ -148,7 +163,7 @@ impl<'a, N: ArrayLength<u8>> IntoIterator for &'a mut ByteVec<N> {
 }
 
 
-impl<N> Serialize for ByteVec<N>
+impl<N> Serialize for Bytes<N>
 where
     N: ArrayLength<u8>,
 {
@@ -161,7 +176,7 @@ where
 }
 
 // TODO: can we delegate to Vec<u8, N> deserialization instead of reimplementing?
-impl<'de, N> Deserialize<'de> for ByteVec< N>
+impl<'de, N> Deserialize<'de> for Bytes<N>
 where
     N: ArrayLength<u8>,
 {
@@ -176,7 +191,7 @@ where
             N: ArrayLength<u8>,
         {
             // type Value = Vec<T, N>;
-            type Value = ByteVec<N>;
+            type Value = Bytes<N>;
 
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
                 formatter.write_str("a sequence")
@@ -187,16 +202,63 @@ where
                 A: SeqAccess<'de>,
             {
                 let mut values: Vec<u8, N> = Vec::new();
+                hprintln!("made a values: {:?} of capacity {:?}",
+                          &values, N::to_usize()).ok();
 
                 while let Some(value) = seq.next_element()? {
                     if values.push(value).is_err() {
+                        hprintln!("error! {}", values.capacity() + 1).ok();
+                        hprintln!("pushing value {:?} errored", &value).ok();
                         return Err(A::Error::invalid_length(values.capacity() + 1, &self))?;
                     }
                 }
 
-                Ok(ByteVec::from(values))
+                Ok(Bytes::from(values))
+            }
+
+            fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                if v.len() > N::to_usize() {
+                    hprintln!("error! own size: {}, data size: {}", N::to_usize(), v.len()).ok();
+                    // return Err(E::invalid_length(values.capacity() + 1, &self))?;
+                    return Err(E::invalid_length(v.len(), &self))?;
+                }
+                let mut buf: Vec<u8, N> = Vec::new();
+                // avoid unwrapping even though redundant
+                match buf.extend_from_slice(v) {
+                    Ok(()) => {},
+                    Err(()) => {
+                        hprintln!("error! own size: {}, data size: {}", N::to_usize(), v.len()).ok();
+                        // return Err(E::invalid_length(values.capacity() + 1, &self))?;
+                        return Err(E::invalid_length(v.len(), &self))?;
+                    }
+                }
+                Ok(Bytes::<N>::from(buf))
             }
         }
         deserializer.deserialize_seq(ValueVisitor(PhantomData))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use heapless::{
+        consts,
+    };
+
+    #[test]
+    fn test_client_data_hash() {
+        let mut minimal = [
+            0x50u8,
+            0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38,
+            0x39, 0x30, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46,
+        ];
+
+        let client_data_hash: Bytes<consts::U32> = serde_cbor::de::from_mut_slice(&mut minimal).unwrap();
+
+        assert_eq!(client_data_hash, b"1234567890ABCDEF");
     }
 }

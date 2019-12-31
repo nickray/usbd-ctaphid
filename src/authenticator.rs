@@ -10,63 +10,28 @@
 //! TODO: Confirm that dependency injection of device logic
 //! into CTAPHID driver is the right approach.
 
-use crate::types::AuthenticatorInfo;
-
-// trait Mandatory {
-//     fn ping(&self);
-//     fn init(&self);
-//     fn msg(&self, message: &[u8]);
-// }
-
-// trait Ctap1Mandatory {
-//     fn ping(&self);
-//     fn msg(&self, message: &[u8]);
-// }
+use crate::types::{
+    AuthenticatorInfo,
+    MakeCredentialParameters,
+};
 
 pub struct Credential {}
 
 /// an authenticator implements this `authenticator::Api`.
-// trait Api<FutureCredential>
-// where
-//     FutureCredential: core::future::Future,
+/// TODO: modify interface so authenticator can process requests asynchronously.
+/// Maybe with core::future::Future?
 pub trait Api
 {
     /// describe authenticator capabilities
     fn get_info(&self) -> AuthenticatorInfo;
 
     /// eventually generate a credential with specified options
-    fn make_credential(
-        &self,
-        client_data_hash: &[u8; 32],
-        rp: &RelyingParty,
-        user: &User,
-        algorithms: &[Algorithm],
-    )
+    fn make_credential(&mut self, params: &MakeCredentialParameters)
         // TODO: use core::future::Future or something similar
         // -> Future<Credential>;
         -> Credential;
 
-    /////
-    //fn get_assertions(&self) -> Future<Credential>;
-}
-
-const MAX_RP_ID_SIZE: usize = 128;
-pub struct RelyingPartyId([u8; MAX_RP_ID_SIZE]);
-
-pub struct RelyingParty {
-    id: RelyingPartyId,
-}
-
-const MAX_USER_ID_SIZE: usize = 128;
-pub struct UserId([u8; MAX_USER_ID_SIZE]);
-
-pub struct User {
-    id: UserId,
-}
-
-pub enum Algorithm {
-    ES256,
-    EdDSA,
+    // fn get_assertions(&self) -> Future<Credential>;
 }
 
 trait Wink {

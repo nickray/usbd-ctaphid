@@ -25,13 +25,11 @@
 
 use crate::{
     authenticator,
-    bytevec::ByteVec,
+    bytes::Bytes,
     constants,
-    pipe::{
-        self,
-    },
     types::{
         AuthenticatorInfo,
+        MakeCredentialParameters,
     },
 };
 
@@ -76,19 +74,13 @@ impl authenticator::Api for InsecureRamAuthenticator {
 
         AuthenticatorInfo {
             versions,
-            aaguid: ByteVec::from(aaguid),
+            aaguid: Bytes::from(aaguid),
             max_msg_size: Some(constants::MESSAGE_SIZE),
             ..AuthenticatorInfo::default()
         }
     }
 
-    fn make_credential(
-        &self,
-        client_data_hash: &[u8; 32],
-        rp: &authenticator::RelyingParty,
-        user: &authenticator::User,
-        algorithms: &[authenticator::Algorithm],
-    ) -> authenticator::Credential {
+    fn make_credential(&mut self, _params: &MakeCredentialParameters) -> authenticator::Credential {
         authenticator::Credential {}
     }
 }

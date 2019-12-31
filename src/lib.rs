@@ -33,6 +33,6 @@ pub mod insecure;
 // #[cfg(feature = "logging")]
 // use funnel::error;
 
-pub mod bytevec;
+pub mod bytes;
 
 pub mod types;
