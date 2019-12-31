@@ -14,24 +14,29 @@ No state is maintained between transactions.
 
 use core::convert::TryInto;
 use core::convert::TryFrom;
-use serde::Serialize;
-
 use cortex_m_semihosting::hprintln;
+use serde::{Deserialize, Serialize};
+use usb_device::{
+    bus::{UsbBus},
+    endpoint::{EndpointAddress, EndpointIn, EndpointOut},
+    UsbError,
+    // Result as UsbResult,
+};
+
 
 use crate::{
+    authenticator::Api as AuthenticatorApi,
+    bytevec::ByteVec,
     constants::{
         // 7609
         MESSAGE_SIZE,
         // 64
         PACKET_SIZE,
     },
-};
-
-use usb_device::{
-    bus::{UsbBus},
-    endpoint::{EndpointAddress, EndpointIn, EndpointOut},
-    UsbError,
-    // Result as UsbResult,
+    types::{
+        AuthenticatorInfo,
+        CtapOptions,
+    },
 };
 
 /// The actual payload of given length is dealt with separately
@@ -85,88 +90,6 @@ impl MessageState {
     }
 }
 
-/// CTAP CBOR is crazy serious about canonical format.
-/// If you change the order here, for instance python-fido2
-/// will no longer parse the entire authenticatorGetInfo
-#[derive(Copy,Clone,Debug,Eq,PartialEq,Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CtapOptions {
-    rk: bool,
-    up: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    uv: Option<bool>,
-    plat: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    client_pin: Option<bool>,
-}
-
-impl Default for CtapOptions {
-    fn default() -> Self {
-        Self {
-            rk: false,
-            up: true,
-            uv: None,
-            plat: false,
-            client_pin: None,
-        }
-    }
-}
-
-#[derive(Clone,Debug,Eq,PartialEq)]
-pub struct AuthenticatorInfo<'l> {
-    versions: &'l[&'l str],
-    extensions: Option<&'l[&'l str]>,
-    aaguid: &'l [u8; 16],
-    options: Option<CtapOptions>,
-    // TODO: this is actually the constant MESSAGE_SIZE
-    max_msg_size: Option<usize>,
-    pin_protocols: Option<&'l[u8]>,
-}
-
-impl<'l> serde::Serialize for AuthenticatorInfo<'l>
-{
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let len = 2usize
-            + self.extensions.is_some() as usize
-            + self.options.is_some() as usize
-            + self.max_msg_size.is_some() as usize
-            + self.pin_protocols.is_some() as usize
-        ;
-        use serde::ser::SerializeMap;
-        let mut map = serializer.serialize_map(Some(len))?;
-
-        // 1
-        map.serialize_entry(&1, self.versions)?;
-        // 2
-        match self.extensions {
-            Some(extensions) => { map.serialize_entry(&2, extensions)?; },
-            None => {},
-        }
-        // 3
-        map.serialize_entry(&3, &serde_bytes::Bytes::new(self.aaguid))?;
-        // 4
-        match self.options {
-            Some(options) => { map.serialize_entry(&4, &options)?; },
-            None => {},
-        }
-        // 5
-        match self.max_msg_size {
-            Some(max_msg_size) => { map.serialize_entry(&5, &max_msg_size)?; },
-            None => {},
-        }
-        // 6
-        match self.pin_protocols {
-            Some(pin_protocols) => { map.serialize_entry(&6, &pin_protocols)?; },
-            None => {},
-        }
-
-        map.end()
-    }
-}
-
 /// the authenticator API, consisting of "operations"
 #[derive(Copy,Clone,Debug,Eq,PartialEq)]
 pub enum Operation {
@@ -214,7 +137,8 @@ impl TryFrom<u8> for VendorOperation {
 
     fn try_from(from: u8) -> core::result::Result<Self, ()> {
         match from {
-            code if code >= Self::FIRST && code <= Self::LAST => Ok(VendorOperation(code)),
+            // code if code >= Self::FIRST && code <= Self::LAST => Ok(VendorOperation(code)),
+            code @ Self::FIRST..=Self::LAST => Ok(VendorOperation(code)),
             _ => Err(()),
         }
     }
@@ -304,7 +228,8 @@ impl TryFrom<u8> for VendorCommand {
 
     fn try_from(from: u8) -> core::result::Result<Self, ()> {
         match from {
-            code if code >= Self::FIRST && code <= Self::LAST => Ok(VendorCommand(code)),
+            // code if code >= Self::FIRST && code <= Self::LAST => Ok(VendorCommand(code)),
+            code @ Self::FIRST..=Self::LAST => Ok(VendorCommand(code)),
             // TODO: replace with Command::Unknown and infallible Try
             _ => Err(()),
         }
@@ -353,12 +278,16 @@ enum State {
     Sending((Response, MessageState)),
 }
 
-pub struct Pipe<'alloc, Bus>
-where Bus: UsbBus
+pub struct Pipe<'alloc, Authenticator, Bus>
+where
+    Authenticator: AuthenticatorApi,
+    Bus: UsbBus,
 {
     read_endpoint: EndpointOut<'alloc, Bus>,
     write_endpoint: EndpointIn<'alloc, Bus>,
     state: State,
+
+    authenticator: &'alloc mut Authenticator,
 
     // shared between requests and responses, due to size
     buffer: [u8; MESSAGE_SIZE],
@@ -369,18 +298,22 @@ where Bus: UsbBus
 
 }
 
-impl<'alloc, Bus> Pipe<'alloc, Bus>
-where Bus: UsbBus
+impl<'alloc, Authenticator, Bus> Pipe<'alloc, Authenticator, Bus>
+where
+    Authenticator: AuthenticatorApi,
+    Bus: UsbBus,
 {
     pub(crate) fn new(
         read_endpoint: EndpointOut<'alloc, Bus>,
         write_endpoint: EndpointIn<'alloc, Bus>,
+        authenticator: &'alloc mut Authenticator,
     ) -> Self
     {
         Self {
             read_endpoint,
             write_endpoint,
             state: State::Idle,
+            authenticator,
             buffer: [0u8; MESSAGE_SIZE],
             last_channel: 0,
         }
@@ -664,8 +597,9 @@ where Bus: UsbBus
                 //        - integer: algorithm from IANA COSE algorithms
                 //          https://www.iana.org/assignments/cose/cose.xhtml#algorithms
                 //      sorted descending by RP preference, we want to support:
-                //        -7 = ES256 = ECDSA with SHA-256, picking NIST P-256 curve
-                //        -8 = EdDSA, picking Ed25519 curve
+                //        -7 = ES256 = ECDSA with SHA-256, picking NIST P-256 curve (curve 1)
+                //        -8 = EdDSA, picking Ed25519 curve (curve 6)
+                //      see fido2/cose.py
                 //
                 // TODO: deserialize CBOR to nice Rust types, call "app" via trait method
                 // TODO: do we poll the app for processed result? does the app callback us?
@@ -675,27 +609,37 @@ where Bus: UsbBus
             Operation::GetInfo => {
                 hprintln!("received authenticatorGetInfo").ok();
 
-                let authenticator_info = AuthenticatorInfo {
-                    versions: &[],//&["FIDO_2_0"], // &["U2F_V2", "FIDO_2_0"],
-                    extensions: None, // Some(&["hmac-secret"]),
-                    aaguid: b"AAGUID0123456789",
-                    // options: None, // Some(CtapOptions::default()),
-                    options: Some(CtapOptions::default()),
-                    max_msg_size: Some(MESSAGE_SIZE),
-                    pin_protocols: None, // Some(&[1]),
-                };
+                let authenticator_info = self.authenticator.get_info();
+                // hprintln!("authenticator_info = {:?}", &authenticator_info).ok();
 
                 // status: 0  = success;
                 self.buffer[0] = 0;
                 // actual payload
                 let writer = serde_cbor::ser::SliceWrite::new(&mut self.buffer[1..]);
-                let mut ser = serde_cbor::Serializer::new(writer);
+                let mut ser = serde_cbor::Serializer::new(writer)
+                    .packed_format()
+                    .pack_starting_with(1)
+                    .pack_to_depth(1)
+                ;
+
+
                 authenticator_info.serialize(&mut ser).unwrap();
 
                 let writer = ser.into_inner();
                 let size = 1 + writer.bytes_written();
-                hprintln!("using serde, wrote {} bytes: {:x?}",
-                          size, &self.buffer[..size]).ok();
+
+                // let mut scratch = [0u8; 128];
+                // let mut a: AuthenticatorInfo = serde_cbor::de::from_slice_with_scratch(
+                //     &self.buffer[1..size], &mut scratch).unwrap()/
+                // let mut a: AuthenticatorInfo = serde_cbor::de::from_mut_slice(
+                //     &mut self.buffer[1..size]).unwrap()/
+
+                // let mut scratch = [0u8; 128];
+                // let authn: AuthenticatorInfo = serde_cbor::de::from_slice_with_scratch(
+                //     &self.buffer[1..size], &mut scratch).unwrap();
+
+                // hprintln!("using serde, wrote {} bytes: {:x?}",
+                //           size, &self.buffer[..size]).ok();
                 let response = Response::from_request_and_size(request, size);
                 self.start_sending(response);
             },
@@ -734,6 +678,8 @@ where Bus: UsbBus
                 }
 
                 // try actually sending
+                // hprintln!("attempting to write init packet {:?}, {:?}",
+                //           &packet[..32], &packet[32..]).ok();
                 let result = self.write_endpoint.write(&packet);
 
                 match result {
@@ -781,6 +727,8 @@ where Bus: UsbBus
                 }
 
                 // try actually sending
+                // hprintln!("attempting to write cont packet {:?}, {:?}",
+                //           &packet[..32], &packet[32..]).ok();
                 let result = self.write_endpoint.write(&packet);
 
                 match result {

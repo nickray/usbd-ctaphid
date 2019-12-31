@@ -5,6 +5,7 @@
 // use crate::{debug, error};
 
 use crate::{
+    authenticator::Api as AuthenticatorApi,
     constants::{
     //     MESSAGE_SIZE,
         PACKET_SIZE,
@@ -25,27 +26,30 @@ use usb_device::{
 };
 
 /// Packet-level implementation of the CTAPHID protocol.
-pub struct CtapHid<'alloc, Bus: UsbBus> {
+pub struct CtapHid<'alloc, Authenticator: AuthenticatorApi, Bus: UsbBus> {
     interface: InterfaceNumber,
-    pipe: Pipe<'alloc, Bus>,
+    pipe: Pipe<'alloc, Authenticator, Bus>,
     // read_endpoint: EndpointOut<'alloc, Bus>,
     // write_endpoint: EndpointIn<'alloc, Bus>,
 }
 
 const INTERRUPT_POLL_MILLISECONDS: u8 = 5;
 
-impl <'alloc, Bus> CtapHid<'alloc, Bus>
+impl <'alloc, Authenticator, Bus> CtapHid<'alloc, Authenticator, Bus>
 where
+    Authenticator: AuthenticatorApi,
 	Bus: UsbBus
 {
-	pub fn new(allocate: &'alloc UsbBusAllocator<Bus>) -> Self {
+	pub fn new(allocate: &'alloc UsbBusAllocator<Bus>, authenticator: &'alloc mut Authenticator)
+        -> Self
+    {
         // 64 bytes, interrupt endpoint polled every 5 milliseconds
         let read_endpoint: EndpointOut<'alloc, Bus> =
             allocate.interrupt(PACKET_SIZE as u16, INTERRUPT_POLL_MILLISECONDS);
         // 64 bytes, interrupt endpoint polled every 5 milliseconds
         let write_endpoint: EndpointIn<'alloc, Bus> =
             allocate.interrupt(PACKET_SIZE as u16, INTERRUPT_POLL_MILLISECONDS);
-        let pipe = Pipe::new(read_endpoint, write_endpoint);
+        let pipe = Pipe::new(read_endpoint, write_endpoint, authenticator);
 
         Self {
             interface: allocate.interface(),
@@ -121,8 +125,9 @@ pub enum ClassRequests {
     SetProtocol = 0xB,
 }
 
-impl<'alloc, Bus> UsbClass<Bus> for CtapHid<'alloc, Bus>
+impl<'alloc, Authenticator, Bus> UsbClass<Bus> for CtapHid<'alloc, Authenticator, Bus>
 where
+    Authenticator: AuthenticatorApi,
     Bus: UsbBus
 {
     fn get_configuration_descriptors(&self, writer: &mut DescriptorWriter) -> UsbResult<()> {

@@ -8,12 +8,34 @@ edition = "2018"
 # nom = { version = "5.0.1", default-features = false }
 usb-device = "0.2.3"
 cortex-m-semihosting = "0.3.5"
-cortex-m-funnel = { version = "0.1.0-alpha.1", optional = true}
+cortex-m-funnel = { version = "0.1.0-alpha.1", optional = true }
+heapless = { version = "0.5.1", features = ["serde"] }
 ufmt = { version = "0.1.0", optional = true}
 serde = { version = "1.0", default-features = false, features = ["derive"] }
-serde_bytes = { version = "0.11.3", default-features = false }
-serde_cbor = { version = "0.10", default-features = false }
+
+# serde_bytes = { version = "0.11.3", default-features = false }
+# serde_bytes = { path = "../serde-bytes", default-features = false, features = ["heapless"] }
+# serde_cbor = { version = "0.10", default-features = false }
 # serde_cbor = { path ="../serde_cbor", default-features = false }
+# serde_cbor = { version = "0.10", default-features = false }
+
+# littlefs2 = { version = "0.1.0-alpha.0", optional = true }
+
+[dependencies.serde_cbor]
+git = "https://github.com/nickray/serde-cbor"
+branch = "nickray-configurable-packing"
+default-features = false
+
+# [dependencies.serde_bytes]
+# git = "https://github.com/nickray/bytes"
+# branch = "nickray-heapless-feature"
+# default-features = false
+# features = ["heapless"]
 
 [features]
 logging = ["cortex-m-funnel", "ufmt"]
+insecure-ram-authenticator = []#"littlefs2"]
+
+# issue: this dependency of bindgen triggers non-`no_std`...
+# [patch.crates-io]
+# rustc-hash = { git = "https://github.com/nickray/rustc-hash", branch = "nickray-remove-byteorder" }
