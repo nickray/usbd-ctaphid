@@ -551,42 +551,48 @@ where
         };
 
         match operation {
+            Operation::GetAssertion => {
+                hprintln!("received authenticatorGetAssertion").ok();
+            },
+
             Operation::MakeCredential => {
                 hprintln!("received authenticatorMakeCredential").ok();
-                // hprintln!("data:: {:x?}", &self.buffer[1..request.length as usize]).ok();
-
-                // can at least handle the output of
-                //
-                // >>> dev = fido2.ctap2.CTAP2(next(fido2.hid.CtapHidDevice.list_devices()))
-                // >>> dev.make_credential(
-                //   b"1234567890ABCDEF",
-                //   {"id": "https://yamnord.com"},
-                //   {"id": b"nickray"},
-                //   [{"type": "public-key", "alg": -7}]
-                // )
-                //
-                // which is b'\x01\xa4\x01P1234567890ABCDEF\x02\xa1bidshttps://yamnord.com\
-                //            \x03\xa1bidGnickray\x04\x81\xa2calg&dtypejpublic-key'
-                //
-                // Note: PublicKeyCredentialParameters is in descending preference.
-                // Want to eventually support:
-                //        -8 = EdDSA, picking Ed25519 curve (curve 6)
-                //        -7 = ES256 = ECDSA with SHA-256, picking NIST P-256 curve (curve 1)
-                // The integer refers to https://www.iana.org/assignments/cose/cose.xhtml#algorithms
 
                 let mut deserializer = serde_cbor::de::Deserializer::from_mut_slice(&mut self.buffer[1..])
                     .packed_starts_with(1);
                 let params: MakeCredentialParameters =
                     serde::de::Deserialize::deserialize(&mut deserializer).unwrap();
 
-                hprintln!("params: {:?}", &params).ok();
+                // hprintln!("params: {:?}", &params).ok();
 
-                let _credential = self.authenticator.get_info();
+                match self.authenticator.make_credential(&params) {
+                    Err(error) => {
+                        self.buffer[0] = error as u8;
+                        let response = Response::from_request_and_size(request, 1);
+                        self.start_sending(response);
+                    },
+                    Ok(attestation_object) => {
+                        self.buffer[0] = 0;
 
-                // TOOD: ...
-                self.buffer[0] = 0;
-                let response = Response::from_request_and_size(request, 1);
-                self.start_sending(response);
+                        let writer = serde_cbor::ser::SliceWrite::new(&mut self.buffer[1..]);
+                        let mut ser = serde_cbor::Serializer::new(writer)
+                            .packed_format()
+                            .pack_starting_with(1)
+                            .pack_to_depth(2)
+                        ;
+
+                        attestation_object.serialize(&mut ser).unwrap();
+
+                        let writer = ser.into_inner();
+                        let size = 1 + writer.bytes_written();
+
+                        // hprintln!("sending response: {:?}", &attestation_object).ok();
+                        // hprintln!("serialized response: {:?}", &self.buffer[1..size]).ok();
+
+                        let response = Response::from_request_and_size(request, size);
+                        self.start_sending(response);
+                    },
+                }
             },
 
             Operation::GetInfo => {

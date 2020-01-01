@@ -1,9 +1,16 @@
-pub use heapless::{consts, String, Vec};
+pub use heapless::{consts, ArrayLength, String, Vec};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     bytes::Bytes,
-    constants::MESSAGE_SIZE,
+    constants::{
+        ATTESTED_CREDENTIAL_DATA_LENGTH,
+        // ATTESTED_CREDENTIAL_DATA_LENGTH_BYTES,
+        AUTHENTICATOR_DATA_LENGTH,
+        // AUTHENTICATOR_DATA_LENGTH_BYTES,
+        COSE_KEY_LENGTH,
+        MESSAGE_SIZE,
+    },
 };
 
 /// CTAP CBOR is crazy serious about canonical format.
@@ -85,7 +92,7 @@ pub struct AuthenticatorExtensions {}
 #[derive(Clone,Debug,Eq,PartialEq,Serialize,Deserialize)]
 pub struct AuthenticatorOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub up: Option<bool>,
+    pub rk: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uv: Option<bool>,
 }
@@ -97,16 +104,128 @@ pub struct MakeCredentialParameters {
     pub rp: PublicKeyCredentialRpEntity,
     pub user: PublicKeyCredentialUserEntity,
     pub pub_key_cred_params: Vec<PublicKeyCredentialParameters, consts::U8>,
-    // #[serde(skip_serializing_if = "Option::is_none")]
-    // pub exclude_list: Option<Vec<PublicKeyCredentialDescriptor, consts::U16>>,
-    // #[serde(skip_serializing_if = "Option::is_none")]
-    // pub extensions: Option<AuthenticatorExtensions>,
-    // #[serde(skip_serializing_if = "Option::is_none")]
-    // pub options: Option<AuthenticatorOptions>,
-    // #[serde(skip_serializing_if = "Option::is_none")]
-    // pub pin_auth: Option<Bytes<consts::U16>>,
-    // #[serde(skip_serializing_if = "Option::is_none")]
-    // pub pin_protocol: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exclude_list: Option<Vec<PublicKeyCredentialDescriptor, consts::U16>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<AuthenticatorExtensions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<AuthenticatorOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pin_auth: Option<Bytes<consts::U16>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pin_protocol: Option<u32>,
+}
+
+//// This is some pretty weird stuff ^^
+//// Example serialization:
+//// { 1: 2,  // kty (key type): tstr / int  [ 2 = EC2 = elliptic curve with x and y coordinate pair
+////                                           1 = OKP = Octet Key Pair = for EdDSA
+////          // kid, bstr
+////   3: -7, // alg: tstr / int
+//// [ 4:     // key_ops: tstr / int           1 = sign, 2 = verify, 3 = encrypt, 4 = decrypt, ...many more
+////
+////  // the curve: 1  = P-256
+////  -1: 1,
+////  // x-coordinate
+////  -2: b'\xa0\xc3\x14\x06!\xefM\xcc\x06u\xf0\xf5v\x0bXa\xe6\xacm\x8d\xd9O`\xbd\x81\xf1\xe0_\x1a*\xdd\x9e',
+////  // y-coordinate
+////  -3: b'\xb4\xd4L\x94-\xbeVr\xe9C\x13u V\xf4t^\xe4.\xa2\x87I\xfe \xa4\xb0KY\x03\x00\x8c\x01'}
+////
+////  EdDSA
+////   1: 1
+////   3: -8,
+////  -1: 6,
+////  -2: public key bytes
+//#[derive(Clone,Debug,Eq,PartialEq,Serialize,Deserialize)]
+//#[serde(rename_all = "camelCase")]
+//pub struct CredentialPublicKey {
+//}
+
+// NOTE: This is not CBOR, it has a custom encoding...
+// https://www.w3.org/TR/webauthn/#sec-attested-credential-data
+#[derive(Clone,Debug,Eq,PartialEq)]
+pub struct AttestedCredentialData {
+	pub aaguid: Bytes<consts::U16>,
+    // this is where "unlimited non-resident keys" get stored
+    // TODO: Model as actual credential ID, with ser/de to bytes (format is up to authenticator)
+    pub credential_id: Bytes<consts::U128>,
+    pub credential_public_key: Bytes<COSE_KEY_LENGTH>,
+}
+
+impl AttestedCredentialData {
+    pub fn serialize(&self) -> Bytes<ATTESTED_CREDENTIAL_DATA_LENGTH> {
+        let mut bytes = Vec::<u8, ATTESTED_CREDENTIAL_DATA_LENGTH>::new();
+        // 16 bytes, the aaguid
+        bytes.extend_from_slice(&self.aaguid).unwrap();
+
+        // byte length of credential ID as 16-bit unsigned big-endian integer.
+        bytes.extend_from_slice(&(self.credential_id.len() as u16).to_be_bytes()).unwrap();
+        // raw bytes of credential ID
+        bytes.extend_from_slice(&self.credential_id[..self.credential_id.len()]).unwrap();
+
+        // // canonical CBOR encoding of credential public key
+        // let mut buffer = [0u8; ATTESTED_CREDENTIAL_DATA_LENGTH_BYTES];
+        // let writer = serde_cbor::ser::SliceWrite::new(&mut buffer);
+        // let mut ser = serde_cbor::Serializer::new(writer)
+        //     // .packed_format()
+        //     // .pack_starting_with(1)
+        //     // .pack_to_depth(1)
+        // ;
+
+        // self.credential_public_key.serialize(&mut ser).unwrap();
+
+        // let writer = ser.into_inner();
+        // let size = writer.bytes_written();
+        // let buffer = writer.into_inner();
+        // bytes.extend_from_slice(&buffer[..size]).unwrap();
+
+        bytes.extend_from_slice(&self.credential_public_key).unwrap();
+        Bytes::from(bytes)
+    }
+}
+
+#[derive(Clone,Debug,Eq,PartialEq)]
+// #[serde(rename_all = "camelCase")]
+pub struct AuthenticatorData {
+    pub rp_id_hash: Bytes<consts::U32>,
+    pub flags: u8,
+    pub sign_count: u32,
+    // this can get pretty long
+    pub attested_credential_data: Option<Bytes<ATTESTED_CREDENTIAL_DATA_LENGTH>>,
+    // pub extensions: ?
+}
+
+impl AuthenticatorData {
+    pub fn serialize(&self) -> Bytes<AUTHENTICATOR_DATA_LENGTH> {
+        let mut bytes = Vec::<u8, AUTHENTICATOR_DATA_LENGTH>::new();
+
+        // 32 bytes, the RP id's hash
+        bytes.extend_from_slice(&self.rp_id_hash).unwrap();
+        // flags
+        bytes.push(self.flags).unwrap();
+        // signature counts as 32-bit unsigned big-endian integer.
+        bytes.extend_from_slice(&self.sign_count.to_be_bytes()).unwrap();
+        match &self.attested_credential_data {
+            Some(ref attested_credential_data) => {
+                // finally the attested credential data
+                bytes.extend_from_slice(&attested_credential_data).unwrap();
+            },
+            None => {},
+        }
+
+        Bytes::from(bytes)
+    }
+}
+
+// NB: attn object definition / order at end of
+// https://fidoalliance.org/specs/fido-v2.0-ps-20190130/fido-client-to-authenticator-protocol-v2.0-ps-20190130.html#authenticatorMakeCredential
+// does not coincide with what python-fido2 expects in AttestationObject.__init__ *at all* :'-)
+#[derive(Clone,Debug,Eq,PartialEq,Serialize,Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttestationObject {
+    pub fmt: String<consts::U32>,
+    pub auth_data: Bytes<AUTHENTICATOR_DATA_LENGTH>,
+    pub att_stmt: Bytes<consts::U64>,
 }
 
 #[derive(Clone,Debug,Eq,PartialEq,Serialize,Deserialize)]
@@ -115,7 +234,7 @@ pub struct AuthenticatorInfo {
     pub(crate) versions: Vec<String<consts::U8>, consts::U2>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) extensions: Option<Vec<String<consts::U11>, consts::U1>>,
+    pub(crate) extensions: Option<Vec<String<consts::U11>, consts::U4>>,
 
     // #[serde(with = "serde_bytes")]
     // #[serde(serialize_with = "serde_bytes::serialize", deserialize_with = "serde_bytes::deserialize")]
