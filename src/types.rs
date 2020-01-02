@@ -10,6 +10,7 @@ use crate::{
         // AUTHENTICATOR_DATA_LENGTH_BYTES,
         COSE_KEY_LENGTH,
         MESSAGE_SIZE,
+        SIGNATURE_LENGTH,
     },
 };
 
@@ -60,11 +61,17 @@ pub struct PublicKeyCredentialRpEntity {
 pub struct PublicKeyCredentialUserEntity {
     pub id: Bytes<consts::U64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String<consts::U64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String<consts::U64>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String<consts::U64>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub url: Option<String<consts::U64>>,
+}
+
+impl PublicKeyCredentialUserEntity {
+    pub fn from(id: Bytes<consts::U64>) -> Self {
+        Self { id, icon: None, name: None, display_name: None }
+    }
 }
 
 #[derive(Clone,Debug,Eq,PartialEq,Serialize,Deserialize)]
@@ -77,9 +84,9 @@ pub struct PublicKeyCredentialParameters {
 #[derive(Clone,Debug,Eq,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PublicKeyCredentialDescriptor {
-    #[serde(rename = "name")]
+    pub id: Bytes<consts::U128>,
+    #[serde(rename = "type")]
     pub key_type: String<consts::U10>,
-    pub id: Bytes<consts::U64>,
     // https://w3c.github.io/webauthn/#enumdef-authenticatortransport
     // transports: ...
 }
@@ -94,7 +101,25 @@ pub struct AuthenticatorOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rk: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub up: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub uv: Option<bool>,
+}
+
+#[derive(Clone,Debug,Eq,PartialEq,Serialize,Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetAssertionParameters {
+    pub rp_id: String<consts::U64>,
+    pub client_data_hash: Bytes<consts::U32>,
+    pub allow_list: Vec<PublicKeyCredentialDescriptor, consts::U8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<AuthenticatorExtensions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<AuthenticatorOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pin_auth: Option<Bytes<consts::U16>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pin_protocol: Option<u32>,
 }
 
 #[derive(Clone,Debug,Eq,PartialEq,Serialize,Deserialize)]
@@ -103,7 +128,8 @@ pub struct MakeCredentialParameters {
     pub client_data_hash: Bytes<consts::U32>,
     pub rp: PublicKeyCredentialRpEntity,
     pub user: PublicKeyCredentialUserEntity,
-    pub pub_key_cred_params: Vec<PublicKeyCredentialParameters, consts::U8>,
+    // e.g. webauthn.io sends 10
+    pub pub_key_cred_params: Vec<PublicKeyCredentialParameters, consts::U12>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exclude_list: Option<Vec<PublicKeyCredentialDescriptor, consts::U16>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -222,11 +248,34 @@ impl AuthenticatorData {
 // does not coincide with what python-fido2 expects in AttestationObject.__init__ *at all* :'-)
 #[derive(Clone,Debug,Eq,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AssertionResponse {
+    pub user: Option<PublicKeyCredentialUserEntity>,
+    pub auth_data: Bytes<AUTHENTICATOR_DATA_LENGTH>,
+    pub signature: Bytes<SIGNATURE_LENGTH>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential: Option<PublicKeyCredentialDescriptor>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub number_of_credentials: Option<u32>,
+}
+
+#[derive(Clone,Debug,Eq,PartialEq,Serialize)]
+pub struct NoneAttestationStatement {}
+
+#[derive(Clone,Debug,Eq,PartialEq,Serialize)]
+#[serde(untagged)]
+pub enum AttestationStatement {
+    None(NoneAttestationStatement),
+}
+#[derive(Clone,Debug,Eq,PartialEq,Serialize/*,Deserialize*/)]
+#[serde(rename_all = "camelCase")]
 pub struct AttestationObject {
     pub fmt: String<consts::U32>,
     pub auth_data: Bytes<AUTHENTICATOR_DATA_LENGTH>,
-    pub att_stmt: Bytes<consts::U64>,
+    // pub att_stmt: Bytes<consts::U64>,
+    pub att_stmt: AttestationStatement,
 }
+
+pub type AssertionResponses = Vec<AssertionResponse, consts::U8>;
 
 #[derive(Clone,Debug,Eq,PartialEq,Serialize,Deserialize)]
 pub struct AuthenticatorInfo {

@@ -11,8 +11,10 @@
 //! into CTAPHID driver is the right approach.
 
 use crate::types::{
+    AssertionResponses,
     AttestationObject,
     AuthenticatorInfo,
+    GetAssertionParameters,
     MakeCredentialParameters,
 };
 
@@ -29,7 +31,10 @@ pub trait Api
         // TODO: use core::future::Future or something similar
         -> Result<AttestationObject>;
 
-    // fn get_assertions(&self) -> Future<Credential>;
+    fn get_assertions(&mut self, params: &GetAssertionParameters)
+        -> Result<AssertionResponses>;
+
+    fn reset(&mut self) -> Result<()>;
 }
 
 trait Wink {

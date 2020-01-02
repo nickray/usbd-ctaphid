@@ -52,6 +52,37 @@ impl<N: ArrayLength<u8>> Bytes<N> {
     pub fn into_iter(self) -> <Vec<u8, N> as IntoIterator>::IntoIter {
         self.bytes.into_iter()
     }
+
+    pub fn try_from_slice(slice: &[u8]) -> core::result::Result<Self, ()> {
+        let mut bytes = Vec::<u8, N>::new();
+        bytes.extend_from_slice(slice)?;
+        Ok(Self::from(bytes))
+    }
+
+    pub fn deref_mut(&mut self) -> &mut [u8] {
+        self.bytes.deref_mut()
+    }
+
+    pub fn from_serialized<T>(t: &T) -> Self
+    where
+        T: Serialize
+    {
+        let mut vec = Vec::<u8, N>::new();
+        vec.resize_default(N::to_usize()).unwrap();
+        let buffer = vec.deref_mut();
+
+        let writer = serde_cbor::ser::SliceWrite::new(buffer);
+        let mut ser = serde_cbor::Serializer::new(writer)
+            .packed_format()
+            // .pack_starting_with(1)
+            // .pack_to_depth(1)
+        ;
+        t.serialize(&mut ser).unwrap();
+        let writer = ser.into_inner();
+        let size = writer.bytes_written();
+        vec.resize_default(size).unwrap();
+        Self::from(vec)
+    }
 }
 
 impl<N: ArrayLength<u8>> Debug for Bytes<N> {

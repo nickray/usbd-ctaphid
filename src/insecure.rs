@@ -23,7 +23,7 @@
 //!
 //! Similar to littlefs2, the idea is to run test using this MVP implementation
 
-// use core::convert::TryInto;
+use core::convert::TryInto;
 // use cortex_m_semihosting::hprintln;
 use crate::{
     authenticator::{
@@ -38,11 +38,17 @@ use crate::{
         COSE_KEY_LENGTH_BYTES,
     },
     types::{
+        AssertionResponse,
+        AssertionResponses,
         AttestationObject,
+        AttestationStatement,
         AttestedCredentialData,
         AuthenticatorData,
         AuthenticatorInfo,
+        GetAssertionParameters,
         MakeCredentialParameters,
+        NoneAttestationStatement,
+        PublicKeyCredentialUserEntity,
     },
 };
 
@@ -51,6 +57,7 @@ use heapless::{
     String,
     consts,
 };
+use serde::{Serialize, Deserialize};
 
 // use littlefs2::{
 //     ram_storage,
@@ -74,11 +81,7 @@ impl InsecureRamAuthenticator {
 impl Default for InsecureRamAuthenticator {
     fn default() -> Self {
         InsecureRamAuthenticator {
-            aaguid: Bytes::from({
-                let mut aaguid = Vec::<u8, consts::U16>::new();
-                aaguid.extend_from_slice(b"AAGUID0123456789").unwrap();
-                aaguid
-            }),
+            aaguid: Bytes::try_from_slice(b"AAGUID0123456789").unwrap(),
             // Haaha. See why this is called an "insecure" authenticator? :D
             master_secret: [37u8; 32],
         }
@@ -126,18 +129,11 @@ fn serialize_salty_public_key(key: &salty::PublicKey) -> Bytes<COSE_KEY_LENGTH> 
     map.serialize_value(&6).unwrap();
     // public key bytes
     map.serialize_key(&-2).unwrap();
-    map.serialize_value(&{
-        let mut bytes = Vec::<u8, consts::U32>::new();
-        bytes.extend_from_slice(key.as_bytes()).unwrap();
-        Bytes::from(bytes)
-    }).unwrap();
-
+    map.serialize_value(&Bytes::<consts::U32>::try_from_slice(key.as_bytes()).unwrap()).unwrap();
     let writer = ser.into_inner();
     let size = writer.bytes_written();
 
-    let mut bytes = Vec::<u8, COSE_KEY_LENGTH>::new();
-    bytes.extend_from_slice(&buffer[..size]).unwrap();
-    Bytes::from(bytes)
+    Bytes::try_from_slice(&buffer[..size]).unwrap()
 }
 
 fn serialize_nisty_public_key(key: &nisty::PublicKey) -> Bytes<COSE_KEY_LENGTH> {
@@ -162,40 +158,160 @@ fn serialize_nisty_public_key(key: &nisty::PublicKey) -> Bytes<COSE_KEY_LENGTH> 
     map.serialize_value(&1).unwrap();
     // x-coordinate
     map.serialize_key(&-2).unwrap();
-    map.serialize_value(&{
-        let mut bytes = Vec::<u8, consts::U32>::new();
-        bytes.extend_from_slice(&key.as_bytes()[..32]).unwrap();
-        Bytes::from(bytes)
-    }).unwrap();
+    map.serialize_value(&Bytes::<consts::U32>::try_from_slice(&key.as_bytes()[..32]).unwrap()).unwrap();
     // y-coordinate
     map.serialize_key(&-3).unwrap();
-    map.serialize_value(&{
-        let mut bytes = Vec::<u8, consts::U32>::new();
-        bytes.extend_from_slice(&key.as_bytes()[32..]).unwrap();
-        Bytes::from(bytes)
-    }).unwrap();
+    map.serialize_value(&Bytes::<consts::U32>::try_from_slice(&key.as_bytes()[32..]).unwrap()).unwrap();
 
     let writer = ser.into_inner();
     let size = writer.bytes_written();
 
-    let mut bytes = Vec::<u8, COSE_KEY_LENGTH>::new();
-    bytes.extend_from_slice(&buffer[..size]).unwrap();
-    Bytes::from(bytes)
+    Bytes::try_from_slice(&buffer[..size]).unwrap()
 }
 
+// solo-c uses CredentialId:
+// * rp_id_hash:
+// * (signature_)counter: to be able to sort by recency descending
+// * nonce
+// * authentication tag
+//
+// For resident keys, it uses (CredentialId, UserEntity)
+#[derive(Clone,Debug,Eq,PartialEq,Serialize,Deserialize)]
+pub struct CredentialInner {
+    pub user_id: Bytes<consts::U64>,
+    pub alg: i8,
+    pub seed: Bytes<consts::U32>,
+}
+
+    // let mut hash = salty::Sha512::new();
+    // hash.update(&self.master_secret);
+    // hash.update(&params.rp.id.as_str().as_bytes());
+    // hash.update(&params.user.id);
+    // let digest: [u8; 64] = hash.finalize();
+    // let seed = nisty::prehash(&digest);
+
+// pub struct GetAssertionParameters {
+//     pub rp_id: String<consts::U64>,
+//     pub client_data_hash: Bytes<consts::U32>,
+//     pub allow_list: Vec<PublicKeyCredentialDescriptor, consts::U8>,
+
+// #[serde(rename_all = "camelCase")]
+// pub struct PublicKeyCredentialDescriptor {
+//     #[serde(rename = "name")]
+//     pub key_type: String<consts::U10>,
+//     pub id: Bytes<consts::U64>,
+//     // https://w3c.github.io/webauthn/#enumdef-authenticatortransport
+//     // transports: ...
+// }
+
 impl authenticator::Api for InsecureRamAuthenticator {
-    fn get_info(&self) -> AuthenticatorInfo {
+    fn get_assertions(&mut self, params: &GetAssertionParameters) -> Result<AssertionResponses>
+    {
+        // 1. locate all eligible credentials
+        // if params.allow_list.len() != 1 {
+        //     return Err(Error::
+        // let number_of_credentials: u32 = ...
 
-        use core::str::FromStr;
-        let mut versions = Vec::<String<consts::U8>, consts::U2>::new();
-        versions.push(String::from_str("FIDO_2_0").unwrap()).unwrap();
+        // 2-4. PIN stuff
 
-        AuthenticatorInfo {
-            versions,
-            aaguid: self.aaguid.clone(),
-            max_msg_size: Some(constants::MESSAGE_SIZE),
-            ..AuthenticatorInfo::default()
+        // 5. process options
+
+        // 6. process extensions
+
+        // 7. collect user consent
+
+        // 8. if no credentials were located in step 1
+        // muy importante: not before step 7!
+        // if number_of_credentials == 0 {
+        //     return Err(Error::NoCredentials);
+        // }
+
+        // 9. if more than one credential found,
+        // order by creation timestampe descending
+
+        // 10. no display:
+
+        // 11. has display:
+
+        // 12. sign client data hash and auth data with selected credential
+
+        // AND NOW SHORTCUT
+        if params.allow_list.len() == 0 {
+            return Err(Error::NoCredentials);
         }
+
+        assert!(params.allow_list.len() == 1);
+        // let number_of_credentials: u32 = 1;
+
+        let mut cloned_credential_id = params.allow_list[0].id.clone();
+        let mut deserializer =
+            serde_cbor::de::Deserializer::from_mut_slice(cloned_credential_id.deref_mut());
+        let credential_inner: CredentialInner =
+            serde::de::Deserialize::deserialize(&mut deserializer).unwrap();
+
+        //// generate authenticator data
+        //let attested_credential_data = AttestedCredentialData {
+        //    aaguid: self.aaguid.clone(),
+        //    credential_id,
+        //    credential_public_key,
+        //};
+        //// hprintln!("attested credential data = {:?}", attested_credential_data).ok();
+
+        //// flags:
+        ////
+        //// USER_PRESENT = 0x01
+        //// USER_VERIFIED = 0x04
+        //// ATTESTED = 0x40
+        //// EXTENSION_DATA = 0x80
+        //let auth_data = AuthenticatorData {
+        //    rp_id_hash: Bytes::<consts::U32>::from({
+        //        let mut bytes = Vec::<u8, consts::U32>::new();
+        //        bytes.extend_from_slice(&nisty::prehash(&params.rp.id.as_str().as_bytes())).unwrap();
+        //        bytes
+        //    }),
+        //    flags: 0x40,
+        //    // flags: 0x0,
+        //    sign_count: 123,
+        //    attested_credential_data: Some(attested_credential_data.serialize()),
+        //    // attested_credential_data: None,
+        //};
+
+        // now sign it. what to do?
+        // 1. sha-256-digest(&authenticator_data || client_data_hash) -> digest
+        // 2. sign(digest) -> signature-bytes
+        // 3. der-encode(signature-bytes) -> signature-der (for this, cf. ctap_encode_der_sig)
+
+        // let credential_public_key = if credential_inner.alg == -8 {
+        if credential_inner.alg == -8 {
+            // Ed25519
+            let _keypair = salty::Keypair::from(&credential_inner.seed.as_ref().try_into().unwrap());
+        } else {
+            // NIST P-256
+            let seed_array: [u8; 32] = credential_inner.seed.as_ref().try_into().unwrap();
+            let _keypair = nisty::Keypair::generate_patiently(&seed_array);
+        };
+
+        // pub user: Option<PublicKeyCredentialUserEntity>,
+        // pub auth_data: Bytes<AUTHENTICATOR_DATA_LENGTH>,
+        // pub signature: Bytes<SIGNATURE_LENGTH>,
+        // pub credential: Option<PublicKeyCredentialDescriptor>,
+        // pub number_of_credentials: Option<u32>,
+        let response = AssertionResponse {
+            user: Some(PublicKeyCredentialUserEntity::from(credential_inner.user_id.clone())),
+            // TODO!
+            auth_data: Bytes::new(),
+            // TODO!
+            signature: Bytes::new(),
+            credential: Some(params.allow_list[0].clone()),
+            number_of_credentials: None, // Some(1),
+        };
+
+        let mut responses = AssertionResponses::new();
+        responses.push(response).unwrap();
+
+        Ok(responses)
+
+
     }
 
     fn make_credential(&mut self, params: &MakeCredentialParameters) -> Result<AttestationObject> {
@@ -276,24 +392,46 @@ impl authenticator::Api for InsecureRamAuthenticator {
         // 11. generate attestation statement.
         // For now, only "none" format, which has serialized "empty map" (0xa0) as its statement
         let fmt = String::<consts::U32>::from("none");
-        let att_stmt = Bytes::<consts::U64>::from({
-            let mut chars = Vec::<u8, consts::U64>::new();
-            chars.push(0xa0).ok();
-            chars
-        });
+        // "none" attestion requires empty statement
+        let att_stmt = AttestationStatement::None(NoneAttestationStatement {});
+        // let att_stmt = Bytes::<consts::U64>::from({
+        //     let mut chars = Vec::<u8, consts::U64>::new();
+        //     chars.push(0xa0).ok();
+        //     chars
+        // });
 
         // return the attestation object
         // WARNING: another reason this is highly insecure, we return the seed
         // as credential ID ^^
         // TODO: do some AEAD based on xchacha20, later reject tampered/invalid credential IDs
-        let mut credential_id = Bytes::<consts::U128>::new();
-        credential_id.extend_from_slice(&seed).unwrap();
+        let credential_inner = CredentialInner {
+            user_id: params.user.id.clone(),
+            alg: if eddsa { -8 } else { -7 },
+            seed: Bytes::try_from_slice(&seed).unwrap(),
+        };
+                        // let writer = serde_cbor::ser::SliceWrite::new(&mut self.buffer[1..]);
+                        // let mut ser = serde_cbor::Serializer::new(writer)
+                        //     .packed_format()
+                        //     .pack_starting_with(1)
+                        //     .pack_to_depth(2)
+                        // ;
+
+                        // attestation_object.serialize(&mut ser).unwrap();
+
+                        // let writer = ser.into_inner();
+                        // let size = 1 + writer.bytes_written();
+
+        let credential_id = Bytes::<consts::U128>::from_serialized(&credential_inner);
+        // hprintln!("credential_id: {:?}", &credential_id).ok();
+        // let mut credential_id = Bytes::<consts::U128>::new();
+        // credential_id.extend_from_slice(&seed).unwrap();
 
         let attested_credential_data = AttestedCredentialData {
             aaguid: self.aaguid.clone(),
             credential_id,
             credential_public_key,
         };
+        // hprintln!("attested credential data = {:?}", attested_credential_data).ok();
 
         // flags:
         //
@@ -313,6 +451,7 @@ impl authenticator::Api for InsecureRamAuthenticator {
             attested_credential_data: Some(attested_credential_data.serialize()),
             // attested_credential_data: None,
         };
+        // hprintln!("auth data = {:?}", &auth_data).ok();
 
         let attestation_object = AttestationObject {
             fmt,
@@ -320,6 +459,25 @@ impl authenticator::Api for InsecureRamAuthenticator {
             att_stmt,
         };
         Ok(attestation_object)
+    }
+
+    fn get_info(&self) -> AuthenticatorInfo {
+
+        use core::str::FromStr;
+        let mut versions = Vec::<String<consts::U8>, consts::U2>::new();
+        // versions.push(String::from_str("U2F_V2").unwrap()).unwrap();
+        versions.push(String::from_str("FIDO_2_0").unwrap()).unwrap();
+
+        AuthenticatorInfo {
+            versions,
+            aaguid: self.aaguid.clone(),
+            max_msg_size: Some(constants::MESSAGE_SIZE),
+            ..AuthenticatorInfo::default()
+        }
+    }
+
+    fn reset(&mut self) -> Result<()> {
+        Ok(())
     }
 }
 

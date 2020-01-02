@@ -25,7 +25,10 @@ use usb_device::{
 
 
 use crate::{
-    authenticator::Api as AuthenticatorApi,
+    authenticator::{
+        Api as AuthenticatorApi,
+        Error as AuthenticatorError,
+    },
     constants::{
         // 7609
         MESSAGE_SIZE,
@@ -33,7 +36,9 @@ use crate::{
         PACKET_SIZE,
     },
     types::{
+        // AssertionResponse,
         // AuthenticatorInfo,
+        GetAssertionParameters,
         MakeCredentialParameters,
     },
 };
@@ -397,12 +402,17 @@ where
             // TODO: add some checks that request.length is OK.
             // e.g., CTAPHID_INIT should have payload of length 8.
 
+            hprintln!("receiving message of length {}", length).ok();
             if length > PACKET_SIZE as u16 - 7 {
                 // store received part of payload,
                 // prepare for continuation packets
                 self.buffer[..PACKET_SIZE - 7]
                     .copy_from_slice(&packet[7..]);
-                self.state = State::Receiving((request, MessageState::default()));
+                self.state = State::Receiving((request, {
+                    let state = MessageState::default();
+                    hprintln!("got {} so far", state.transmitted).ok();
+                    state
+                }));
                 // we're done... wait for next packet
                 return;
             } else {
@@ -418,27 +428,37 @@ where
             match self.state {
                 State::Receiving((request, mut message_state)) => {
                     let sequence = packet[4];
+                    hprintln!("receiving continuation packet {}", sequence).ok();
                     if sequence != message_state.next_sequence {
                         // error handling?
+                        hprintln!("wrong sequence for continuation packet, expected {} received {}",
+                                  message_state.next_sequence, sequence).ok();
                         return;
                     }
                     if channel != request.channel {
                         // error handling?
+                        hprintln!("wrong channel for continuation packet, expected {} received {}",
+                                  request.channel, channel).ok();
                         return;
                     }
 
                     let payload_length = request.length as usize;
                     if message_state.transmitted + (PACKET_SIZE - 5) < payload_length {
+                        // hprintln!("transmitted {} + (PACKET_SIZE - 5) < {}",
+                        //           message_state.transmitted, payload_length).ok();
                         // store received part of payload
                         self.buffer[message_state.transmitted..][..PACKET_SIZE - 5]
                             .copy_from_slice(&packet[5..]);
                         message_state.absorb_packet();
+                        self.state = State::Receiving((request, message_state));
+                        hprintln!("absorbed packet, awaiting next").ok();
                         return;
                     } else {
                         let missing = request.length as usize - message_state.transmitted;
                         self.buffer[message_state.transmitted..payload_length]
                             .copy_from_slice(&packet[5..][..missing]);
                         self.state = State::Processing(request);
+                        // hprintln!("got all we need, let's dispatch").ok();
                         self.dispatch_request();
                     }
                 },
@@ -514,13 +534,20 @@ where
                     hprintln!("received WINK!").ok();
                     // TODO: request.length should be zero
                     // TODO: callback "app"
-                    let response = Response::from_request_and_size(request, 0);
+                    let response = Response::from_request_and_size(request, 1);
                     self.start_sending(response);
                 },
 
                 Command::Cbor => {
                     hprintln!("command CBOR!").ok();
                     self.handle_cbor(request);
+                },
+
+                Command::Msg => {
+                    hprintln!("command MSG - no support!").ok();
+                    self.buffer[0] = AuthenticatorError::Other as u8;
+                    let response = Response::from_request_and_size(request, 1);
+                    self.start_sending(response);
                 },
 
                 // TODO: handle other requests
@@ -553,15 +580,64 @@ where
         match operation {
             Operation::GetAssertion => {
                 hprintln!("received authenticatorGetAssertion").ok();
+                hprintln!("with data: {:?}", &self.buffer[1..request.length as usize]).ok();
+
+
+                let mut deserializer = serde_cbor::de::Deserializer::from_mut_slice(&mut self.buffer[1..])
+                    .packed_starts_with(1);
+                let params: GetAssertionParameters =
+                    serde::de::Deserialize::deserialize(&mut deserializer).unwrap();
+
+                hprintln!("params: {:?}", &params).ok();
+
+                match self.authenticator.get_assertions(&params) {
+                    Err(error) => {
+                        self.buffer[0] = error as u8;
+                        let response = Response::from_request_and_size(request, 1);
+                        self.start_sending(response);
+                    },
+                    Ok(assertion_responses) => {
+                        hprintln!("got assertion_responses: {:?}", &assertion_responses).ok();
+                        self.buffer[0] = 0;
+
+                        let writer = serde_cbor::ser::SliceWrite::new(&mut self.buffer[1..]);
+                        let mut ser = serde_cbor::Serializer::new(writer)
+                            .packed_format()
+                            .pack_starting_with(1)
+                            .pack_to_depth(2)
+                        ;
+
+                        assertion_responses[0].serialize(&mut ser).unwrap();
+
+                        let writer = ser.into_inner();
+                        let size = 1 + writer.bytes_written();
+
+                        // hprintln!("sending response: {:?}", &attestation_object).ok();
+                        // hprintln!("serialized response: {:?}", &self.buffer[1..size]).ok();
+
+                        let response = Response::from_request_and_size(request, size);
+                        self.start_sending(response);
+                    },
+                }
             },
 
             Operation::MakeCredential => {
                 hprintln!("received authenticatorMakeCredential").ok();
+                let buffer_backup = self.buffer.clone();
 
                 let mut deserializer = serde_cbor::de::Deserializer::from_mut_slice(&mut self.buffer[1..])
                     .packed_starts_with(1);
-                let params: MakeCredentialParameters =
-                    serde::de::Deserialize::deserialize(&mut deserializer).unwrap();
+                let params: MakeCredentialParameters = match serde::de::Deserialize::deserialize(&mut deserializer) {
+                    Ok(params) => params,
+                    Err(error) => {
+                        hprintln!("error decoding MakeCredentialParameters: {:?}", error).ok();
+                        hprintln!("from data: {:?}", &buffer_backup[1..request.length as usize]).ok();
+                        self.buffer[0] = AuthenticatorError::InvalidCbor as u8;
+                        let response = Response::from_request_and_size(request, 1);
+                        self.start_sending(response);
+                        return;
+                    }
+                };
 
                 // hprintln!("params: {:?}", &params).ok();
 
@@ -611,7 +687,7 @@ where
                     .pack_to_depth(1)
                 ;
 
-
+                // hprintln!("returning info {:?}", &authenticator_info).ok();
                 authenticator_info.serialize(&mut ser).unwrap();
 
                 let writer = ser.into_inner();
@@ -630,6 +706,16 @@ where
                 // hprintln!("using serde, wrote {} bytes: {:x?}",
                 //           size, &self.buffer[..size]).ok();
                 let response = Response::from_request_and_size(request, size);
+                self.start_sending(response);
+            },
+
+            Operation::Reset => {
+                hprintln!("received authenticatorReset").ok();
+                match self.authenticator.reset() {
+                    Ok(_) =>  { self.buffer[0] = 0; },
+                    Err(error) => { self.buffer[0] = error as u8; },
+                }
+                let response = Response::from_request_and_size(request, 1);
                 self.start_sending(response);
             },
 
@@ -677,6 +763,7 @@ where
                         // this shouldn't happen probably
                     },
                     Err(_) => {
+                        hprintln!("weird USB errrorrr").ok();
                         panic!("unexpected error writing packet!");
                     },
                     Ok(PACKET_SIZE) => {
@@ -684,6 +771,7 @@ where
                         if fits_in_one_packet {
                             self.state = State::Idle;
                             // hprintln!("StartSent {} bytes, idle again", response.length).ok();
+                            hprintln!("IDLE again").ok();
                         } else {
                             self.state = State::Sending((response, MessageState::default()));
                             // hprintln!(
@@ -693,6 +781,7 @@ where
                         }
                     },
                     Ok(_) => {
+                        hprintln!("short write").ok();
                         panic!("unexpected size writing packet!");
                     },
                 };
@@ -728,12 +817,14 @@ where
                                   message_state.next_sequence).ok();
                     },
                     Err(_) => {
+                        hprintln!("weird USB error").ok();
                         panic!("unexpected error writing packet!");
                     },
                     Ok(PACKET_SIZE) => {
                         // goodie, this worked
                         if last_packet {
                             self.state = State::Idle;
+                            hprintln!("in IDLE state").ok();
                         } else {
                             message_state.absorb_packet();
                             // DANGER! destructuring in the match arm copies out
@@ -742,6 +833,7 @@ where
                         }
                     },
                     Ok(_) => {
+                        hprintln!("short write").ok();
                         panic!("unexpected size writing packet!");
                     },
                 };

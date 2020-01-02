@@ -30,5 +30,9 @@ pub type AUTHENTICATOR_DATA_LENGTH = consts::U512;
 pub const AUTHENTICATOR_DATA_LENGTH_BYTES: usize = 512;
 
 #[allow(non_camel_case_types)]
+pub type SIGNATURE_LENGTH = consts::U64;
+pub const SIGNATURE_LENGTH_BYTES: usize = 64;
+
+#[allow(non_camel_case_types)]
 pub type COSE_KEY_LENGTH = consts::U256;
 pub const COSE_KEY_LENGTH_BYTES: usize = 256;
