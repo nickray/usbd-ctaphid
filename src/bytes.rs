@@ -7,6 +7,7 @@ use core::{
     marker::PhantomData,
 };
 pub use heapless::ArrayLength;
+pub use heapless::consts;
 use heapless::Vec;
 use serde::{
     ser::{Serialize, Serializer},

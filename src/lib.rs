@@ -36,3 +36,5 @@ pub mod insecure;
 pub mod bytes;
 
 pub mod types;
+
+pub mod derpy;

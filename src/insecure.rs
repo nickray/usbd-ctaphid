@@ -24,7 +24,7 @@
 //! Similar to littlefs2, the idea is to run test using this MVP implementation
 
 use core::convert::TryInto;
-use cortex_m_semihosting::hprintln;
+// use cortex_m_semihosting::hprintln;
 use crate::{
     authenticator::{
         self,
@@ -38,6 +38,7 @@ use crate::{
         COSE_KEY_LENGTH,
         COSE_KEY_LENGTH_BYTES,
     },
+    derpy::Der,
     types::{
         AssertionResponse,
         AssertionResponses,
@@ -81,14 +82,6 @@ pub enum Keypair {
     P256(nisty::Keypair),
 }
 
-enum Asn1Tag {
-    /// ASN.1 `INTEGER`
-    Integer = 0x02,
-
-    /// ASN.1 `SEQUENCE`: lists of other elements
-    Sequence = 0x30,
-}
-
 impl Keypair {
     pub fn serialize_public_key(&self) -> Bytes<COSE_KEY_LENGTH> {
         match self {
@@ -110,63 +103,25 @@ impl Keypair {
 
                 // https://tools.ietf.org/html/rfc3279#section-2.2.3
 
+                //  Ecdsa-Sig-Value  ::=  SEQUENCE  {
+                //    r     INTEGER,
+                //    s     INTEGER  }
+
                 let sig_fixed = *keypair.sign_prehashed(digest).as_bytes();
                 let r = &sig_fixed[..32];
+                // hprintln!("r = {:?}", r);
                 let s = &sig_fixed[32..];
+                // hprintln!("s = {:?}", s);
 
-                // TODO: use something like https://docs.rs/ecdsa/0.3.0/src/ecdsa/convert.rs.html#160-190
-                // instead of translating solo ctap.c's ctap_encode_der_sig()
+                let mut buf = [0u8; 72];
+                let mut der = Der::new(&mut buf);
+                der.sequence(|der| Ok({
+                    der.non_negative_integer(r)?;
+                    der.non_negative_integer(s)?;
+                })).unwrap();
+                // hprintln!("der = {:?}", &der.as_ref()).unwrap();
+                Bytes::<consts::U72>::try_from_slice(der.as_ref()).unwrap()
 
-                let mut der = [0u8; 72];
-
-                let mut lead_r = 0;
-                for i in 0..32 {
-                    if r[i] != 0 {
-                        break;
-                    }
-                    lead_r += 1;
-                }
-                let mut lead_s = 0;
-                for i in 0..32 {
-                    if s[i] != 0 {
-                        break;
-                    }
-                    lead_s += 1;
-                }
-
-                let pad_r = ((r[lead_r] & 0x80) == 0x80) as usize;
-                let pad_s = ((s[lead_s] & 0x80) == 0x80) as usize;
-
-                der[0] = Asn1Tag::Sequence as _;
-                der[1] = (0x44 + pad_r + pad_s - lead_r - lead_s) as _;
-
-                // r
-                der[2] = Asn1Tag::Integer as _;
-                der[3 + pad_r] = 0;
-                der[3] = (0x20 + pad_r - lead_r) as _;
-                der[4 + pad_r..][..32 - lead_r].copy_from_slice(&r[lead_r..]);
-
-                // s
-                der[4 + 32 + pad_r - lead_r] = Asn1Tag::Integer as _;
-                der[5 + 32 + pad_r + pad_s - lead_r] = 0;
-                der[5 + 32 + pad_r - lead_r] = (0x20 + pad_s - lead_s) as _;
-                der[6 + 32 + pad_r + pad_s - lead_r..][..32 - lead_s].copy_from_slice(&s[lead_s..]);
-
-                Bytes::<consts::U72>::try_from_slice(&der[..0x46 + pad_r + pad_s - lead_r - lead_s]).unwrap()
-
-                // // R ingredient
-                // out_sigder[2] = 0x02;
-                // out_sigder[3 + pad_r] = 0;
-                // out_sigder[3] = 0x20 + pad_r - lead_r;
-                // memmove(out_sigder + 4 + pad_r, in_sigbuf + lead_r, 32u - lead_r);
-
-                // // S ingredient
-                // out_sigder[4 + 32 + pad_r - lead_r] = 0x02;
-                // out_sigder[5 + 32 + pad_r + pad_s - lead_r] = 0;
-                // out_sigder[5 + 32 + pad_r - lead_r] = 0x20 + pad_s - lead_s;
-                // memmove(out_sigder + 6 + 32 + pad_r + pad_s - lead_r, in_sigbuf + 32u + lead_s, 32u - lead_s);
-
-                // return 0x46 + pad_s + pad_r - lead_r - lead_s;
             },
             // _ => Bytes::<consts::U72>::new()
             // Self::Ed25519(keypair) => *keypair.sign_prehashed(digest, None).as_bytes(),
