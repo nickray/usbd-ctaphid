@@ -47,7 +47,8 @@ use crate::{
         AuthenticatorInfo,
         GetAssertionParameters,
         MakeCredentialParameters,
-        NoneAttestationStatement,
+        // NoneAttestationStatement,
+        PackedAttestationStatement,
         PublicKeyCredentialUserEntity,
     },
 };
@@ -69,6 +70,101 @@ use serde::{Serialize, Deserialize};
 // };
 
 // ram_storage!(tiny);
+
+// TODO: generate this in a clean way. e.g. python cryptography SUX
+pub const SOLO_HACKER_ATTN_CERT: [u8; 511] = *include_bytes!("solo-hacker-attn-cert.der");
+pub const SOLO_HACKER_ATTN_KEY: [u8; 32] = *include_bytes!("solo-hacker-attn-key.le.raw");
+
+pub enum Keypair {
+    Ed25519(salty::Keypair),
+    P256(nisty::Keypair),
+}
+
+enum Asn1Tag {
+    /// ASN.1 `INTEGER`
+    Integer = 0x02,
+
+    /// ASN.1 `SEQUENCE`: lists of other elements
+    Sequence = 0x30,
+}
+
+impl Keypair {
+    pub fn serialize_public_key(&self) -> Bytes<COSE_KEY_LENGTH> {
+        match self {
+            Self::P256(keypair) => serialize_nisty_public_key(&keypair.public),
+            Self::Ed25519(keypair) => serialize_salty_public_key(&keypair.public),
+        }
+    }
+
+    pub fn asn1_sign_prehashed(&self, digest: &[u8; 32]) -> Bytes<consts::U72> {
+        match self {
+            Self::P256(keypair) => {
+
+                // https://tools.ietf.org/html/rfc3279#section-2.2.3
+
+                let sig_fixed = *keypair.sign_prehashed(digest).as_bytes();
+                let r = &sig_fixed[..32];
+                let s = &sig_fixed[32..];
+
+                // TODO: use something like https://docs.rs/ecdsa/0.3.0/src/ecdsa/convert.rs.html#160-190
+                // instead of translating solo ctap.c's ctap_encode_der_sig()
+
+                let mut der = [0u8; 72];
+
+                let mut lead_r = 0;
+                for i in 0..32 {
+                    if r[i] != 0 {
+                        break;
+                    }
+                    lead_r += 1;
+                }
+                let mut lead_s = 0;
+                for i in 0..32 {
+                    if s[i] != 0 {
+                        break;
+                    }
+                    lead_s += 1;
+                }
+
+                let pad_r = ((r[lead_r] & 0x80) == 0x80) as usize;
+                let pad_s = ((s[lead_s] & 0x80) == 0x80) as usize;
+
+                der[0] = Asn1Tag::Sequence as _;
+                der[1] = (0x44 + pad_r + pad_s - lead_r - lead_s) as _;
+
+                // r
+                der[2] = Asn1Tag::Integer as _;
+                der[3 + pad_r] = 0;
+                der[3] = (0x20 + pad_r - lead_r) as _;
+                der[4 + pad_r..][..32 - lead_r].copy_from_slice(&r[lead_r..]);
+
+                // s
+                der[4 + 32 + pad_r - lead_r] = Asn1Tag::Integer as _;
+                der[5 + 32 + pad_r + pad_s - lead_r] = 0;
+                der[5 + 32 + pad_r - lead_r] = (0x20 + pad_s - lead_s) as _;
+                der[6 + 32 + pad_r + pad_s - lead_r..][..32 - lead_s].copy_from_slice(&s[lead_s..]);
+
+                Bytes::<consts::U72>::try_from_slice(&der[..0x46 + pad_r + pad_s - lead_r - lead_s]).unwrap()
+
+                // // R ingredient
+                // out_sigder[2] = 0x02;
+                // out_sigder[3 + pad_r] = 0;
+                // out_sigder[3] = 0x20 + pad_r - lead_r;
+                // memmove(out_sigder + 4 + pad_r, in_sigbuf + lead_r, 32u - lead_r);
+
+                // // S ingredient
+                // out_sigder[4 + 32 + pad_r - lead_r] = 0x02;
+                // out_sigder[5 + 32 + pad_r + pad_s - lead_r] = 0;
+                // out_sigder[5 + 32 + pad_r - lead_r] = 0x20 + pad_s - lead_s;
+                // memmove(out_sigder + 6 + 32 + pad_r + pad_s - lead_r, in_sigbuf + 32u + lead_s, 32u - lead_s);
+
+                // return 0x46 + pad_s + pad_r - lead_r - lead_s;
+            }
+            _ => Bytes::<consts::U72>::new()
+            // Self::Ed25519(keypair) => *keypair.sign_prehashed(digest, None).as_bytes(),
+        }
+    }
+}
 
 pub struct InsecureRamAuthenticator {
     aaguid: Bytes<consts::U16>,
@@ -282,14 +378,42 @@ impl authenticator::Api for InsecureRamAuthenticator {
         // 3. der-encode(signature-bytes) -> signature-der (for this, cf. ctap_encode_der_sig)
 
         // let credential_public_key = if credential_inner.alg == -8 {
-        if credential_inner.alg == -8 {
+        let keypair = if credential_inner.alg == -8 {
             // Ed25519
-            let _keypair = salty::Keypair::from(&credential_inner.seed.as_ref().try_into().unwrap());
+            Keypair::Ed25519(salty::Keypair::from(&credential_inner.seed.as_ref().try_into().unwrap()))
         } else {
             // NIST P-256
             let seed_array: [u8; 32] = credential_inner.seed.as_ref().try_into().unwrap();
-            let _keypair = nisty::Keypair::generate_patiently(&seed_array);
+            Keypair::P256(nisty::Keypair::generate_patiently(&seed_array))
         };
+
+        let attested_credential_data = AttestedCredentialData {
+            aaguid: self.aaguid.clone(),
+            credential_id: cloned_credential_id,
+            credential_public_key: keypair.serialize_public_key(),
+        };
+        let auth_data = AuthenticatorData {
+            rp_id_hash: Bytes::<consts::U32>::from({
+                let mut bytes = Vec::<u8, consts::U32>::new();
+                bytes.extend_from_slice(&nisty::prehash(&params.rp_id.as_str().as_bytes())).unwrap();
+                bytes
+            }),
+            // TODO: what goes here?
+            flags: 0x40,
+            // flags: 0x0,
+            sign_count: 123,
+            attested_credential_data: Some(attested_credential_data.serialize()),
+            // attested_credential_data: None,
+        };
+        let serialized_auth_data = auth_data.serialize();
+
+        use sha2::digest::Digest;
+        let mut hash = sha2::Sha256::new();
+        hash.input(&serialized_auth_data);
+        hash.input(&params.client_data_hash);
+        let digest: [u8; 32] = hash.result().try_into().unwrap();
+        // data.into()
+        let sig = keypair.asn1_sign_prehashed(&digest);
 
         // pub user: Option<PublicKeyCredentialUserEntity>,
         // pub auth_data: Bytes<AUTHENTICATOR_DATA_LENGTH>,
@@ -299,9 +423,9 @@ impl authenticator::Api for InsecureRamAuthenticator {
         let response = AssertionResponse {
             user: Some(PublicKeyCredentialUserEntity::from(credential_inner.user_id.clone())),
             // TODO!
-            auth_data: Bytes::new(),
+            auth_data: serialized_auth_data,
             // TODO!
-            signature: Bytes::new(),
+            signature: sig,
             credential: Some(params.allow_list[0].clone()),
             number_of_credentials: None, // Some(1),
         };
@@ -336,6 +460,8 @@ impl authenticator::Api for InsecureRamAuthenticator {
                 _ => {},
             }
         }
+        // TODO: temporary, remove!!
+        eddsa = false;
         if !supported_algorithm {
             return Err(Error::UnsupportedAlgorithm);
         }
@@ -370,20 +496,16 @@ impl authenticator::Api for InsecureRamAuthenticator {
         let digest: [u8; 64] = hash.finalize();
         let seed = nisty::prehash(&digest);
 
-        let credential_public_key = if eddsa {
+        // let keypair = if eddsa {
+        let keypair = if eddsa {
             // prefer Ed25519
-            let keypair = salty::Keypair::from(&seed);
-            // hprintln!("public_key: {:?}", &keypair.public).ok();
-            // let public_key_bytes = keypair.public.to_bytes();
-            serialize_salty_public_key(&keypair.public)
+            Keypair::Ed25519(salty::Keypair::from(&seed))
         } else {
-            // fallback NIST P-256
-            let keypair = nisty::Keypair::generate_patiently(&seed);
-            // hprintln!("public_key: {:?}", &keypair.public).ok();
-            // TODO: use compressed public key?
-            // keypair.public.to_bytes()[..32].try_into().unwrap()
-            serialize_nisty_public_key(&keypair.public)
+            Keypair::P256(nisty::Keypair::generate_patiently(&seed))
         };
+
+        let credential_public_key = keypair.serialize_public_key();
+
         // hprintln!("serialized public_key: {:?}", &credential_public_key).ok();
 
         // 10. if `rk` option is set, attempt to store it
@@ -391,14 +513,6 @@ impl authenticator::Api for InsecureRamAuthenticator {
 
         // 11. generate attestation statement.
         // For now, only "none" format, which has serialized "empty map" (0xa0) as its statement
-        let fmt = String::<consts::U32>::from("none");
-        // "none" attestion requires empty statement
-        let att_stmt = AttestationStatement::None(NoneAttestationStatement {});
-        // let att_stmt = Bytes::<consts::U64>::from({
-        //     let mut chars = Vec::<u8, consts::U64>::new();
-        //     chars.push(0xa0).ok();
-        //     chars
-        // });
 
         // return the attestation object
         // WARNING: another reason this is highly insecure, we return the seed
@@ -453,11 +567,39 @@ impl authenticator::Api for InsecureRamAuthenticator {
         };
         // hprintln!("auth data = {:?}", &auth_data).ok();
 
+        let serialized_auth_data = auth_data.serialize();
+
+        // // NONE
+        // let fmt = String::<consts::U32>::from("none");
+        // let att_stmt = AttestationStatement::None(NoneAttestationStatement {}); // "none" attestion requires empty statement
+
+        // PACKED
+        use sha2::digest::Digest;
+        let mut hash = sha2::Sha256::new();
+        hash.input(&serialized_auth_data);
+        hash.input(&params.client_data_hash);
+        let digest: [u8; 32] = hash.result().try_into().unwrap();
+        // data.into()
+        let attn_keypair = Keypair::P256(nisty::Keypair::try_from_bytes(&SOLO_HACKER_ATTN_KEY).unwrap());
+        let sig = attn_keypair.asn1_sign_prehashed(&digest);
+
+        let mut packed_attn_stmt = PackedAttestationStatement {
+            alg: -7,
+            sig,
+            x5c: Vec::new(),
+        };
+        packed_attn_stmt.x5c.push(Bytes::try_from_slice(&SOLO_HACKER_ATTN_CERT).unwrap()).unwrap();
+
+        let fmt = String::<consts::U32>::from("packed");
+        let att_stmt = AttestationStatement::Packed(packed_attn_stmt);
+
+
         let attestation_object = AttestationObject {
             fmt,
-            auth_data: auth_data.serialize(),
+            auth_data: serialized_auth_data,
             att_stmt,
         };
+
         Ok(attestation_object)
     }
 

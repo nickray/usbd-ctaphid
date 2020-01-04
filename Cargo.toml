@@ -16,6 +16,7 @@ usb-device = "0.2.3"
 # chacha20 = { version = "0.2.3" }
 nisty = { version = "0.1.0-alpha.0", default-features = false, optional = true }
 salty = { version = "0.1.0-alpha.0", optional = true }
+sha2 = { version = "0.8.0", default-features = false, optional = true }
 ufmt = { version = "0.1.0", optional = true}
 
 [dependencies.serde_cbor]
@@ -24,15 +25,9 @@ git = "https://github.com/nickray/serde-cbor"
 branch = "nickray-configurable-packing"
 default-features = false
 
-# [dependencies.serde_bytes]
-# git = "https://github.com/nickray/bytes"
-# branch = "nickray-heapless-feature"
-# default-features = false
-# features = ["heapless"]
-
 [features]
 # logging = ["cortex-m-funnel", "ufmt"]
-insecure-ram-authenticator = ["nisty", "salty/tweetnacl"]  #"littlefs2"]
+insecure-ram-authenticator = ["nisty", "salty/tweetnacl", "sha2"]  #"littlefs2"]
 
 # issue: this dependency of bindgen triggers non-`no_std`...
 # [patch.crates-io]

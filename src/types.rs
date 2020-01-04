@@ -10,7 +10,7 @@ use crate::{
         // AUTHENTICATOR_DATA_LENGTH_BYTES,
         COSE_KEY_LENGTH,
         MESSAGE_SIZE,
-        SIGNATURE_LENGTH,
+        ASN1_SIGNATURE_LENGTH,
     },
 };
 
@@ -251,7 +251,7 @@ impl AuthenticatorData {
 pub struct AssertionResponse {
     pub user: Option<PublicKeyCredentialUserEntity>,
     pub auth_data: Bytes<AUTHENTICATOR_DATA_LENGTH>,
-    pub signature: Bytes<SIGNATURE_LENGTH>,
+    pub signature: Bytes<ASN1_SIGNATURE_LENGTH>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credential: Option<PublicKeyCredentialDescriptor>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -262,10 +262,19 @@ pub struct AssertionResponse {
 pub struct NoneAttestationStatement {}
 
 #[derive(Clone,Debug,Eq,PartialEq,Serialize)]
+pub struct PackedAttestationStatement {
+    pub alg: i32,
+    pub sig: Bytes<ASN1_SIGNATURE_LENGTH>,
+    pub x5c: Vec<Bytes<consts::U1024>, consts::U1>,
+}
+
+#[derive(Clone,Debug,Eq,PartialEq,Serialize)]
 #[serde(untagged)]
 pub enum AttestationStatement {
     None(NoneAttestationStatement),
+    Packed(PackedAttestationStatement),
 }
+
 #[derive(Clone,Debug,Eq,PartialEq,Serialize/*,Deserialize*/)]
 #[serde(rename_all = "camelCase")]
 pub struct AttestationObject {
@@ -475,5 +484,28 @@ mod tests {
         // assert!(make_cred_params.client_data_hash.len() > 0);
         // assert!(make_cred_params.second_client_data_hash.is_none());
         // assert!(make_cred_params.third_client_data_hash.len() > 0);
+    }
+
+    #[test]
+    fn test_make_credential_params() {
+
+        let mut buffer = [
+            163, 2, 162, 98, 105, 100, 107, 101, 120, 97, 109, 112, 108, 101, 46,
+            111, 114, 103, 100, 110, 97, 109, 101, 105, 69, 120, 97, 109, 112, 108,
+            101, 82, 80, 3, 164, 98, 105, 100, 71, 3, 104, 32, 204, 154, 255, 165,
+            100, 105, 99, 111, 110, 120, 31, 104, 116, 116, 112, 115, 58, 47, 47,
+            119, 119, 119, 46, 119, 51, 46, 111, 114, 103, 47, 84, 82, 47, 119, 101,
+            98, 97, 117, 116, 104, 110, 47, 100, 110, 97, 109, 101, 115, 67, 97, 108,
+            108, 97, 32, 86, 105, 114, 103, 105, 110, 105, 101, 32, 68, 97, 110, 97,
+            107, 100, 105, 115, 112, 108, 97, 121, 78, 97, 109, 101, 120, 29, 68, 105,
+            115, 112, 108, 97, 121, 101, 100, 32, 67, 97, 108, 108, 97, 32, 86, 105,
+            114, 103, 105, 110, 105, 101, 32, 68, 97, 110, 97, 4, 129, 162, 99, 97,
+            108, 103, 38, 100, 116, 121, 112, 101, 106, 112, 117, 98, 108, 105, 99,
+            45, 107, 101, 121];
+        let mut buffer = [163, 2, 162, 98, 105, 100, 107, 101, 120, 97, 109, 112, 108, 101, 46, 111, 114, 103, 100, 110, 97, 109, 101, 105, 69, 120, 97, 109, 112, 108, 101, 82, 80, 3, 163, 98, 105, 100, 71, 3, 104, 32, 204, 154, 255, 165, 100, 110, 97, 109, 101, 115, 67, 97, 108, 108, 97, 32, 86, 105, 114, 103, 105, 110, 105, 101, 32, 68, 97, 110, 97, 107, 100, 105, 115, 112, 108, 97, 121, 78, 97, 109, 101, 120, 29, 68, 105, 115, 112, 108, 97, 121, 101, 100, 32, 67, 97, 108, 108, 97, 32, 86, 105, 114, 103, 105, 110, 105, 101, 32, 68, 97, 110, 97, 4, 129, 162, 99, 97, 108, 103, 38, 100, 116, 121, 112, 101, 106, 112, 117, 98, 108, 105, 99, 45, 107, 101, 121];
+
+        use serde::de;
+        let mut deserializer = serde_cbor::de::Deserializer::from_mut_slice(&mut buffer).packed_starts_with(1);
+        let _make_cred_params: MakeCredentialParameters = de::Deserialize::deserialize(&mut deserializer).unwrap();
     }
 }

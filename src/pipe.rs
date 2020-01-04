@@ -580,15 +580,27 @@ where
         match operation {
             Operation::GetAssertion => {
                 hprintln!("received authenticatorGetAssertion").ok();
-                hprintln!("with data: {:?}", &self.buffer[1..request.length as usize]).ok();
+                // hprintln!("with data: {:?}", &self.buffer[1..request.length as usize]).ok();
 
+                let buffer_backup = self.buffer.clone();
 
                 let mut deserializer = serde_cbor::de::Deserializer::from_mut_slice(&mut self.buffer[1..])
                     .packed_starts_with(1);
-                let params: GetAssertionParameters =
-                    serde::de::Deserialize::deserialize(&mut deserializer).unwrap();
+                // let params: GetAssertionParameters =
+                //     serde::de::Deserialize::deserialize(&mut deserializer).unwrap();
 
-                hprintln!("params: {:?}", &params).ok();
+                // hprintln!("params: {:?}", &params).ok();
+                let params: GetAssertionParameters = match serde::de::Deserialize::deserialize(&mut deserializer) {
+                    Ok(params) => params,
+                    Err(error) => {
+                        hprintln!("error decoding GetAssertionParameters: {:?}", error).ok();
+                        hprintln!("from data: {:?}", &buffer_backup[1..request.length as usize]).ok();
+                        self.buffer[0] = AuthenticatorError::InvalidCbor as u8;
+                        let response = Response::from_request_and_size(request, 1);
+                        self.start_sending(response);
+                        return;
+                    }
+                };
 
                 match self.authenticator.get_assertions(&params) {
                     Err(error) => {
@@ -654,7 +666,7 @@ where
                         let mut ser = serde_cbor::Serializer::new(writer)
                             .packed_format()
                             .pack_starting_with(1)
-                            .pack_to_depth(2)
+                            .pack_to_depth(1)
                         ;
 
                         attestation_object.serialize(&mut ser).unwrap();
