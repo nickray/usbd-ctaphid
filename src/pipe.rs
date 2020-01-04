@@ -609,7 +609,7 @@ where
                         self.start_sending(response);
                     },
                     Ok(assertion_responses) => {
-                        hprintln!("got assertion_responses: {:?}", &assertion_responses).ok();
+                        // hprintln!("got assertion_responses: {:?}", &assertion_responses).ok();
                         self.buffer[0] = 0;
 
                         let writer = serde_cbor::ser::SliceWrite::new(&mut self.buffer[1..]);

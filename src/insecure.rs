@@ -24,7 +24,7 @@
 //! Similar to littlefs2, the idea is to run test using this MVP implementation
 
 use core::convert::TryInto;
-// use cortex_m_semihosting::hprintln;
+use cortex_m_semihosting::hprintln;
 use crate::{
     authenticator::{
         self,
@@ -34,6 +34,7 @@ use crate::{
     bytes::Bytes,
     constants::{
         self,
+        AUTHENTICATOR_DATA_LENGTH_BYTES,
         COSE_KEY_LENGTH,
         COSE_KEY_LENGTH_BYTES,
     },
@@ -98,6 +99,13 @@ impl Keypair {
 
     pub fn asn1_sign_prehashed(&self, digest: &[u8; 32]) -> Bytes<consts::U72> {
         match self {
+            Self::Ed25519(keypair) => {
+                let sig_fixed = keypair.sign(digest).to_bytes();
+                Bytes::<consts::U72>::try_from_slice(&sig_fixed).unwrap()
+
+
+            },
+
             Self::P256(keypair) => {
 
                 // https://tools.ietf.org/html/rfc3279#section-2.2.3
@@ -159,8 +167,8 @@ impl Keypair {
                 // memmove(out_sigder + 6 + 32 + pad_r + pad_s - lead_r, in_sigbuf + 32u + lead_s, 32u - lead_s);
 
                 // return 0x46 + pad_s + pad_r - lead_r - lead_s;
-            }
-            _ => Bytes::<consts::U72>::new()
+            },
+            // _ => Bytes::<consts::U72>::new()
             // Self::Ed25519(keypair) => *keypair.sign_prehashed(digest, None).as_bytes(),
         }
     }
@@ -413,7 +421,28 @@ impl authenticator::Api for InsecureRamAuthenticator {
         hash.input(&params.client_data_hash);
         let digest: [u8; 32] = hash.result().try_into().unwrap();
         // data.into()
-        let sig = keypair.asn1_sign_prehashed(&digest);
+        let sig = if credential_inner.alg == -8 {
+            let mut buf = [0u8; AUTHENTICATOR_DATA_LENGTH_BYTES + 32];
+            let auth_data_size = serialized_auth_data.len();
+            buf[..auth_data_size].copy_from_slice(&serialized_auth_data);
+
+            // hprintln!("auth_data_size = {}", auth_data_size).ok();
+            // hprintln!("self.auth_data = {:?}", &serialized_auth_data).ok();
+            // buf[auth_data_size..][..32].copy_from_slice(&params.client_data_hash);
+            // hprintln!("client_param = {:?}", &params.client_data_hash).ok();
+            buf[auth_data_size..][..params.client_data_hash.len()].copy_from_slice(&params.client_data_hash);
+
+            let sig_fixed = match keypair {
+                Keypair::Ed25519(keypair) => {
+                    keypair.sign(&buf[..auth_data_size + params.client_data_hash.len()]).to_bytes()
+                },
+                _ => { unreachable!(); },
+            };
+            Bytes::<consts::U72>::try_from_slice(&sig_fixed).unwrap()
+        } else {
+            // let sig = keypair.asn1_sign_prehashed(&digest);
+            keypair.asn1_sign_prehashed(&digest)
+        };
 
         // pub user: Option<PublicKeyCredentialUserEntity>,
         // pub auth_data: Bytes<AUTHENTICATOR_DATA_LENGTH>,
@@ -461,7 +490,7 @@ impl authenticator::Api for InsecureRamAuthenticator {
             }
         }
         // TODO: temporary, remove!!
-        eddsa = false;
+        // eddsa = false;
         if !supported_algorithm {
             return Err(Error::UnsupportedAlgorithm);
         }
