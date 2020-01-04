@@ -12,8 +12,7 @@ pub enum Tag {
     // OctetString = 0x04,
     // Null = 0x05,
     // Oid = 0x06,
-    Sequence = CONSTRUCTED | 0x10,
-    // 0x30 or decimal 48
+    Sequence = CONSTRUCTED | 0x10, // 0x30 or decimal 48
     // UtcTime = 0x17,
     // GeneralizedTime = 0x18,
     // ContextSpecificConstructed0 = CONTEXT_SPECIFIC | CONSTRUCTED | 0,
@@ -216,10 +215,10 @@ mod test {
         let mut buf = [0u8; 1024];
         let mut der = Der::new(&mut buf);
         der.sequence(|der| {
-            Ok({
+            {
                 der.non_negative_integer(&r)?;
-                der.non_negative_integer(&s)?;
-            })
+                der.non_negative_integer(&s)
+            }
         })
         .unwrap();
 
