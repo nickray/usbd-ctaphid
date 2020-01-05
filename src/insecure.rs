@@ -113,8 +113,7 @@ impl Keypair {
                 let s = &sig_fixed[32..];
                 // hprintln!("s = {:?}", s);
 
-                let mut buf = [0u8; 72];
-                let mut der = Der::new(&mut buf);
+                let mut der = Der::<consts::U72>::new();
                 der.sequence(|der| Ok({
                     der.non_negative_integer(r)?;
                     der.non_negative_integer(s)?;

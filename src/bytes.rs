@@ -60,6 +60,24 @@ impl<N: ArrayLength<u8>> Bytes<N> {
         Ok(Self::from(bytes))
     }
 
+    // cf. https://internals.rust-lang.org/t/add-vec-insert-slice-at-to-insert-the-content-of-a-slice-at-an-arbitrary-index/11008/3
+    pub fn insert_slice_at(&mut self, slice: &[u8], at: usize) -> core::result::Result<(), ()> {
+        let l = slice.len();
+        let before = self.len();
+
+        // make space
+        self.bytes.resize_default(before + l)?;
+
+        // move back existing
+        let raw: &mut [u8] = &mut self.bytes;
+        raw.copy_within(at..before, at + l);
+
+        // insert slice
+        raw[at..][..l].copy_from_slice(slice);
+
+        Ok(())
+    }
+
     pub fn deref_mut(&mut self) -> &mut [u8] {
         self.bytes.deref_mut()
     }
