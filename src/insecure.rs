@@ -51,7 +51,7 @@ use crate::{
         MakeCredentialParameters,
         // NoneAttestationStatement,
         PackedAttestationStatement,
-        PublicKeyCredentialUserEntity,
+        // PublicKeyCredentialUserEntity,
     },
 };
 
@@ -354,11 +354,11 @@ impl authenticator::Api for InsecureRamAuthenticator {
             Keypair::P256(nisty::Keypair::generate_patiently(&seed_array))
         };
 
-        let attested_credential_data = AttestedCredentialData {
-            aaguid: self.aaguid.clone(),
-            credential_id: cloned_credential_id,
-            credential_public_key: keypair.serialize_public_key(),
-        };
+        // let attested_credential_data = AttestedCredentialData {
+        //     aaguid: self.aaguid.clone(),
+        //     credential_id: cloned_credential_id,
+        //     credential_public_key: keypair.serialize_public_key(),
+        // };
         let auth_data = AuthenticatorData {
             rp_id_hash: Bytes::<consts::U32>::from({
                 let mut bytes = Vec::<u8, consts::U32>::new();

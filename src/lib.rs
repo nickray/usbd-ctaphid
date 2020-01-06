@@ -34,7 +34,5 @@ pub mod insecure;
 // use funnel::error;
 
 pub mod bytes;
-
-pub mod types;
-
 pub mod derpy;
+pub mod types;

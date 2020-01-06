@@ -14,6 +14,8 @@ use crate::{
     },
 };
 
+pub mod ctap1;
+
 /// CTAP CBOR is crazy serious about canonical format.
 /// If you change the order here, for instance python-fido2
 /// will no longer parse the entire authenticatorGetInfo

@@ -40,6 +40,7 @@ use crate::{
         // AuthenticatorInfo,
         GetAssertionParameters,
         MakeCredentialParameters,
+        ctap1,
     },
 };
 
@@ -544,16 +545,58 @@ where
                 },
 
                 Command::Msg => {
-                    hprintln!("command MSG - no support!").ok();
-                    self.buffer[0] = AuthenticatorError::Other as u8;
-                    let response = Response::from_request_and_size(request, 1);
-                    self.start_sending(response);
+                    hprintln!("command MSG!").ok();
+                    self.handle_msg(request);
                 },
 
                 // TODO: handle other requests
                 _ => {
                     hprintln!("unknown command {:?}", request.command).ok();
                 },
+            }
+        }
+    }
+
+    fn handle_msg(&mut self, request: Request) {
+        // this is the U2F/CTAP1 layer.
+        // we handle it by mapping to CTAP2, similar to how user agents
+        // map CTAP2 to CTAP1.
+        // hprintln!("data = {:?}", &self.buffer[..request.length as usize]).ok();
+
+        let command = ctap1::Command::try_from(&self.buffer[..request.length as usize]);
+        match command {
+            Err(error) => {
+                hprintln!("ERROR").ok();
+                self.buffer[..2].copy_from_slice(&(error as u16).to_be_bytes());
+                let response = Response::from_request_and_size(request, 2);
+                self.start_sending(response);
+            },
+            Ok(command) => {
+                match command {
+                    ctap1::Command::Version => {
+                        hprintln!("U2F_VERSION").ok();
+                        // GetVersion
+                        // self.buffer[0] = 0;
+                        self.buffer[..6].copy_from_slice(b"U2F_V2");
+                        // self.buffer[6..][..2].copy_from_slice(ctap1::NoError::to_be_bytes());
+                        self.buffer[6..][..2].copy_from_slice(&(ctap1::NO_ERROR).to_be_bytes());
+                        let response = Response::from_request_and_size(request, 8);
+                        hprintln!("sending response: {:x?}", &self.buffer[..response.length as usize]).ok();
+                        self.start_sending(response);
+                    },
+                    ctap1::Command::Register(register) => {
+                        hprintln!("command {:?}", &register).ok();
+                        self.buffer[..2].copy_from_slice(&(ctap1::Error::InsNotSupported as u16).to_be_bytes());
+                        let response = Response::from_request_and_size(request, 1);
+                        self.start_sending(response);
+                    },
+                    ctap1::Command::Authenticate(authenticate) => {
+                        hprintln!("command {:?}", &authenticate).ok();
+                        self.buffer[..2].copy_from_slice(&(ctap1::Error::InsNotSupported as u16).to_be_bytes());
+                        let response = Response::from_request_and_size(request, 1);
+                        self.start_sending(response);
+                    }
+                }
             }
         }
     }
