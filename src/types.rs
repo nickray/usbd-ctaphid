@@ -249,11 +249,12 @@ impl AuthenticatorData {
 #[derive(Clone,Debug,Eq,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssertionResponse {
-    pub user: Option<PublicKeyCredentialUserEntity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential: Option<PublicKeyCredentialDescriptor>,
     pub auth_data: Bytes<AUTHENTICATOR_DATA_LENGTH>,
     pub signature: Bytes<ASN1_SIGNATURE_LENGTH>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub credential: Option<PublicKeyCredentialDescriptor>,
+    pub user: Option<PublicKeyCredentialUserEntity>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub number_of_credentials: Option<u32>,
 }

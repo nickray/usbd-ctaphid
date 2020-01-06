@@ -24,7 +24,7 @@
 //! Similar to littlefs2, the idea is to run test using this MVP implementation
 
 use core::convert::TryInto;
-// use cortex_m_semihosting::hprintln;
+use cortex_m_semihosting::hprintln;
 use crate::{
     authenticator::{
         self,
@@ -131,6 +131,7 @@ impl Keypair {
 pub struct InsecureRamAuthenticator {
     aaguid: Bytes<consts::U16>,
     master_secret: [u8; 32],
+    signature_count: u32,
 }
 
 impl InsecureRamAuthenticator {
@@ -142,6 +143,7 @@ impl Default for InsecureRamAuthenticator {
             aaguid: Bytes::try_from_slice(b"AAGUID0123456789").unwrap(),
             // Haaha. See why this is called an "insecure" authenticator? :D
             master_secret: [37u8; 32],
+            signature_count: 123,
         }
     }
 }
@@ -306,6 +308,7 @@ impl authenticator::Api for InsecureRamAuthenticator {
             serde_cbor::de::Deserializer::from_mut_slice(cloned_credential_id.deref_mut());
         let credential_inner: CredentialInner =
             serde::de::Deserialize::deserialize(&mut deserializer).unwrap();
+        // hprintln!("credential inner: {:?}", &credential_inner);
 
         //// generate authenticator data
         //let attested_credential_data = AttestedCredentialData {
@@ -342,9 +345,11 @@ impl authenticator::Api for InsecureRamAuthenticator {
         // let credential_public_key = if credential_inner.alg == -8 {
         let keypair = if credential_inner.alg == -8 {
             // Ed25519
+            hprintln!("logging in with 25519").ok();
             Keypair::Ed25519(salty::Keypair::from(&credential_inner.seed.as_ref().try_into().unwrap()))
         } else {
             // NIST P-256
+            hprintln!("logging in with NIST").ok();
             let seed_array: [u8; 32] = credential_inner.seed.as_ref().try_into().unwrap();
             Keypair::P256(nisty::Keypair::generate_patiently(&seed_array))
         };
@@ -361,12 +366,14 @@ impl authenticator::Api for InsecureRamAuthenticator {
                 bytes
             }),
             // TODO: what goes here?
-            flags: 0x40,
+            flags: 0x01, // | 0x40,
             // flags: 0x0,
-            sign_count: 123,
-            attested_credential_data: Some(attested_credential_data.serialize()),
+            sign_count: self.signature_count,
+            attested_credential_data: None, //Some(attested_credential_data.serialize()),
             // attested_credential_data: None,
         };
+        self.signature_count += 1;
+        // hprintln!("auth_data = {:?}", &auth_data).ok();
         let serialized_auth_data = auth_data.serialize();
 
         use sha2::digest::Digest;
@@ -404,13 +411,14 @@ impl authenticator::Api for InsecureRamAuthenticator {
         // pub credential: Option<PublicKeyCredentialDescriptor>,
         // pub number_of_credentials: Option<u32>,
         let response = AssertionResponse {
-            user: Some(PublicKeyCredentialUserEntity::from(credential_inner.user_id.clone())),
+            user: None, //Some(PublicKeyCredentialUserEntity::from(credential_inner.user_id.clone())),
             // TODO!
             auth_data: serialized_auth_data,
             // TODO!
             signature: sig,
-            credential: Some(params.allow_list[0].clone()),
+            credential: None, //Some(params.allow_list[0].clone()),
             number_of_credentials: None, // Some(1),
+            // number_of_credentials: Some(1),
         };
 
         let mut responses = AssertionResponses::new();
@@ -506,6 +514,7 @@ impl authenticator::Api for InsecureRamAuthenticator {
             alg: if eddsa { -8 } else { -7 },
             seed: Bytes::try_from_slice(&seed).unwrap(),
         };
+        // hprintln!("credential inner: {:?}", &credential_inner);
                         // let writer = serde_cbor::ser::SliceWrite::new(&mut self.buffer[1..]);
                         // let mut ser = serde_cbor::Serializer::new(writer)
                         //     .packed_format()
@@ -542,12 +551,13 @@ impl authenticator::Api for InsecureRamAuthenticator {
                 bytes.extend_from_slice(&nisty::prehash(&params.rp.id.as_str().as_bytes())).unwrap();
                 bytes
             }),
-            flags: 0x40,
+            flags: 0x01 | 0x40,
             // flags: 0x0,
-            sign_count: 123,
+            sign_count: self.signature_count,
             attested_credential_data: Some(attested_credential_data.serialize()),
             // attested_credential_data: None,
         };
+        self.signature_count += 1;
         // hprintln!("auth data = {:?}", &auth_data).ok();
 
         let serialized_auth_data = auth_data.serialize();

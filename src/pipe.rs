@@ -451,7 +451,7 @@ where
                             .copy_from_slice(&packet[5..]);
                         message_state.absorb_packet();
                         self.state = State::Receiving((request, message_state));
-                        hprintln!("absorbed packet, awaiting next").ok();
+                        // hprintln!("absorbed packet, awaiting next").ok();
                         return;
                     } else {
                         let missing = request.length as usize - message_state.transmitted;
@@ -619,12 +619,13 @@ where
                             .pack_to_depth(2)
                         ;
 
-                        assertion_responses[0].serialize(&mut ser).unwrap();
+                        let attestation_object = &assertion_responses[0];
+                        attestation_object.serialize(&mut ser).unwrap();
 
                         let writer = ser.into_inner();
                         let size = 1 + writer.bytes_written();
 
-                        // hprintln!("sending response: {:?}", &attestation_object).ok();
+                        // hprintln!("sending response: {:?}", attestation_object).ok();
                         // hprintln!("serialized response: {:?}", &self.buffer[1..size]).ok();
 
                         let response = Response::from_request_and_size(request, size);
@@ -836,11 +837,12 @@ where
                         // goodie, this worked
                         if last_packet {
                             self.state = State::Idle;
-                            hprintln!("in IDLE state").ok();
+                            hprintln!("in IDLE state after {:?}", &message_state).ok();
                         } else {
                             message_state.absorb_packet();
                             // DANGER! destructuring in the match arm copies out
                             // message state, so need to update state
+                            // hprintln!("sent one more, now {:?}", &message_state).ok();
                             self.state = State::Sending((response, message_state));
                         }
                     },
