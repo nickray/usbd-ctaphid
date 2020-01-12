@@ -18,6 +18,11 @@ use crate::types::{
     MakeCredentialParameters,
 };
 
+// trait SimpleFuture {
+//     type Output;
+//     fn poll(&mut self, wake: fn()) -> Poll<Self::Output>;
+// }
+
 /// an authenticator implements this `authenticator::Api`.
 /// TODO: modify interface so authenticator can process requests asynchronously.
 /// Maybe with core::future::Future?

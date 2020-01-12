@@ -4,7 +4,19 @@
 
 use core::convert::TryInto;
 use cortex_m_semihosting::hprintln;
-use crate::bytes::{Bytes, consts};
+use crate::{
+    bytes::{Bytes, consts},
+    types::{
+        AuthenticatorOptions,
+        MakeCredentialParameters,
+        // GetAssertionParameters,
+        // PublicKeyCredentialDescriptor,
+        PublicKeyCredentialParameters,
+        PublicKeyCredentialRpEntity,
+        PublicKeyCredentialUserEntity,
+    },
+};
+pub use heapless::{String, Vec};
 
 // pub struct WrongData;
 
@@ -23,6 +35,11 @@ pub enum Error {
 #[repr(u8)]
 #[derive(Copy,Clone,Debug,Eq,PartialEq)]
 pub enum ControlByte {
+	// Conor:
+    // I think U2F check-only maps to FIDO2 MakeCredential with the credID in the excludeList,
+    // and pinAuth="" so the request will fail before UP check.
+    // I  think this is what the windows hello API does to silently check if a credential is
+	// on an authenticator
     CheckOnly = 0x07,
     EnforceUserPresenceAndSign = 0x03,
     DontEnforceUserPresenceAndSign = 0x08,
@@ -64,6 +81,56 @@ pub struct Register {
     max_response: usize,
 }
 
+impl From<ControlByte> for AuthenticatorOptions {
+    fn from(control_byte: ControlByte) -> Self {
+        AuthenticatorOptions {
+            rk: Some(false),
+            up: Some(match control_byte {
+                ControlByte::CheckOnly => false,
+                ControlByte::EnforceUserPresenceAndSign => true,
+                ControlByte::DontEnforceUserPresenceAndSign => false,
+            }),
+            // safety hole?
+            uv: Some(false),
+        }
+    }
+}
+
+// impl From<Register> for MakeCredentialParameters {
+//     fn from(register: Register) -> Self {
+//         let pub_key_cred_params = Vec::new();
+//         let key_type = String::new();
+//         key_type.push_str("public-key").unwrap();
+//         pub_key_cred_params.push(PublicKeyCredentialParameters {
+//             alg: -7,
+//             key_type,
+//         });
+
+//         MakeCredentialParameters {
+//             client_data_hash: register.client_data_hash,
+//             // uff
+//             rp: {
+//                 let id = String::new();
+//                 id.push_
+//                 PublicKeyCredentialRpEntity {
+//                     id: String::from(register.app_id_hash),
+//                     name: None, url: None,
+//                 }
+//             },
+//             user: PublicKeyCredentialUserEntity {
+//                 id: Bytes::new(),
+//                 icon: None, name: None, display_name: None,
+//             },
+//             pub_key_cred_params,
+//             exclude_list: None,
+//             extensions: None,
+//             options: None,
+//             pin_auth: None,
+//             pin_protocol: None,
+//         }
+//     }
+// }
+
 #[derive(Clone,Debug,Eq,PartialEq)]
 pub struct Authenticate {
     control_byte: ControlByte,
@@ -81,53 +148,61 @@ pub enum Command {
 }
 
 // U2FHID uses extended length encoding
-fn parse_apdu_data(mut partial: &[u8]) -> Result<(&[u8], usize)> {
-    match partial.len() {
+fn parse_apdu_data(mut remaining: &[u8]) -> Result<(&[u8], usize)> {
+    match remaining.len() {
         // Lc = Le = 0
         0 => Ok((&[], 0)),
+        // non-zero first byte would indicate short encoding,
+        // but U2FHID is always extended length encoding.
+        // extended length uses (0,upper byte,lower byte) for
+        // lengths; u16_be for the extended lengths, the leading
+        // zero to distinguish from short encoding.
+        // -> lengths 1 and 2 can't occur
         1 => Err(Error::WrongLength),
         2 => Err(Error::WrongLength),
-        3 => {
-            // Lc = 0, skipped
-            let nearly_le = u16::from_be_bytes(partial[1..].try_into().unwrap());
-            Ok((&[], match nearly_le {
-                0 => 65_536usize,
-                non_zero => non_zero as usize,
-            }))
-        },
         _ => {
-            // first byte is zero
-            // if partial[0] != 0 ==> error
-            hprintln!("case l, partial[..4] = {:?}", &partial[..4]).ok();
-            partial = &partial[1..];
+            if remaining[0] != 0 {
+                return Err(Error::WrongData);
+            }
+            remaining = &remaining[1..];
 
-            // next two bytes are Lc, followed by request of length Lc, the possibly Le
-            let lc = u16::from_be_bytes(partial[..2].try_into().unwrap()) as usize;
-            hprintln!("lc = {}", lc).ok();
-            partial = &partial[2..];
+            let request_length = {
+                let first_length = u16::from_be_bytes(remaining[..2].try_into().unwrap()) as usize;
+                remaining = &remaining[2..];
+                if remaining.len() == 0 {
+                    let expected = match first_length {
+                        0 => u16::max_value() as usize + 1,
+                        non_zero => non_zero,
+                    };
+                    return Ok((&[], expected));
+                }
+                first_length
+            };
 
-            // request
-            if partial.len() < lc {
+            if remaining.len() < request_length {
                 return Err(Error::WrongLength);
             }
-            let request = &partial[..lc];
+            let request = &remaining[..request_length];
 
-            // now for expected length
-            partial = &partial[lc..];
-            match partial.len() {
-                0 => Ok((request, 0)),
-                2 => {
-                    let nearly_le = u16::from_be_bytes(partial.try_into().unwrap());
-                    Ok((request, match nearly_le {
-                        0 => 65_536usize,
-                        non_zero => non_zero as usize,
-                    }))
-                }
-                _ => Err(Error::WrongLength),
+            remaining = &remaining[request_length..];
+            if remaining.len() == 0 {
+                return Ok((request, 0));
             }
+            // since Lc is given, Le has no leading zero.
+            // single byte would again be short encoding
+            if remaining.len() == 1 {
+                return Err(Error::WrongData);
+            }
+            if remaining.len() > 2 {
+                return Err(Error::WrongLength);
+            }
+            let expected = match u16::from_be_bytes(remaining.try_into().unwrap()) as usize {
+                0 => u16::max_value() as usize + 1,
+                non_zero => non_zero,
+            };
+            Ok((request, expected))
         },
     }
-    // (0, 0, partial)
 }
 
 // TODO: From<AssertionResponse> for ...

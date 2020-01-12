@@ -1,5 +1,6 @@
 pub use heapless::{consts, ArrayLength, String, Vec};
 use serde::{Deserialize, Serialize};
+use serde_indexed::{DeserializeIndexed, SerializeIndexed};
 
 use crate::{
     bytes::Bytes,
@@ -108,8 +109,9 @@ pub struct AuthenticatorOptions {
     pub uv: Option<bool>,
 }
 
-#[derive(Clone,Debug,Eq,PartialEq,Serialize,Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone,Debug,Eq,PartialEq,SerializeIndexed,DeserializeIndexed)]
+// #[serde(rename_all = "camelCase")]
+#[serde_indexed(offset = 1)]
 pub struct GetAssertionParameters {
     pub rp_id: String<consts::U64>,
     pub client_data_hash: Bytes<consts::U32>,
@@ -124,8 +126,9 @@ pub struct GetAssertionParameters {
     pub pin_protocol: Option<u32>,
 }
 
-#[derive(Clone,Debug,Eq,PartialEq,Serialize,Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone,Debug,Eq,PartialEq,SerializeIndexed,DeserializeIndexed)]
+// #[serde(rename_all = "camelCase")]
+#[serde_indexed(offset = 1)]
 pub struct MakeCredentialParameters {
     pub client_data_hash: Bytes<consts::U32>,
     pub rp: PublicKeyCredentialRpEntity,
@@ -248,8 +251,8 @@ impl AuthenticatorData {
 // NB: attn object definition / order at end of
 // https://fidoalliance.org/specs/fido-v2.0-ps-20190130/fido-client-to-authenticator-protocol-v2.0-ps-20190130.html#authenticatorMakeCredential
 // does not coincide with what python-fido2 expects in AttestationObject.__init__ *at all* :'-)
-#[derive(Clone,Debug,Eq,PartialEq,Serialize,Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone,Debug,Eq,PartialEq,SerializeIndexed,DeserializeIndexed)]
+#[serde_indexed(offset = 1)]
 pub struct AssertionResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credential: Option<PublicKeyCredentialDescriptor>,
@@ -278,8 +281,8 @@ pub enum AttestationStatement {
     Packed(PackedAttestationStatement),
 }
 
-#[derive(Clone,Debug,Eq,PartialEq,Serialize/*,Deserialize*/)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone,Debug,Eq,PartialEq,SerializeIndexed)]
+#[serde_indexed(offset = 1)]
 pub struct AttestationObject {
     pub fmt: String<consts::U32>,
     pub auth_data: Bytes<AUTHENTICATOR_DATA_LENGTH>,
@@ -289,7 +292,8 @@ pub struct AttestationObject {
 
 pub type AssertionResponses = Vec<AssertionResponse, consts::U8>;
 
-#[derive(Clone,Debug,Eq,PartialEq,Serialize,Deserialize)]
+#[derive(Clone,Debug,Eq,PartialEq,SerializeIndexed,DeserializeIndexed)]
+#[serde_indexed(offset = 1)]
 pub struct AuthenticatorInfo {
 
     pub(crate) versions: Vec<String<consts::U8>, consts::U2>,
@@ -389,11 +393,8 @@ mod tests {
     fn test_serialize() {
         let mut buffer = [0u8; 64];
         let writer = serde_cbor::ser::SliceWrite::new(&mut buffer);
-        let mut ser = serde_cbor::Serializer::new(writer)
-            .packed_format()
-            .pack_starting_with(1)
-            .pack_to_depth(1)
-        ;
+        let mut ser = serde_cbor::Serializer::new(writer);
+
         let mut cdh = Vec::<u8, consts::U32>::new();
         cdh.extend_from_slice(b"1234567890ABCDEF").unwrap();
         Bytes::from(cdh).serialize(&mut ser).unwrap();
@@ -448,7 +449,6 @@ mod tests {
 
         use serde::de;
         let mut deserializer = serde_cbor::de::Deserializer::from_mut_slice(&mut buffer[..size]);
-        //.packed_starts_with(1);
         let _deser: Vec<PublicKeyCredentialParameters, consts::U8> = de::Deserialize::deserialize(&mut deserializer).unwrap();
     }
 
@@ -478,7 +478,7 @@ mod tests {
         ];
 
         use serde::de;
-        let mut deserializer = serde_cbor::de::Deserializer::from_mut_slice(&mut buffer).packed_starts_with(1);
+        let mut deserializer = serde_cbor::de::Deserializer::from_mut_slice(&mut buffer);
         let _make_cred_params: MakeCredentialParameters = de::Deserialize::deserialize(&mut deserializer).unwrap();
 
         // let make_cred_params: MakeCredentialParameters =

@@ -345,11 +345,11 @@ impl authenticator::Api for InsecureRamAuthenticator {
         // let credential_public_key = if credential_inner.alg == -8 {
         let keypair = if credential_inner.alg == -8 {
             // Ed25519
-            hprintln!("logging in with 25519").ok();
+            // hprintln!("logging in with 25519").ok();
             Keypair::Ed25519(salty::Keypair::from(&credential_inner.seed.as_ref().try_into().unwrap()))
         } else {
             // NIST P-256
-            hprintln!("logging in with NIST").ok();
+            // hprintln!("logging in with NIST").ok();
             let seed_array: [u8; 32] = credential_inner.seed.as_ref().try_into().unwrap();
             Keypair::P256(nisty::Keypair::generate_patiently(&seed_array))
         };
