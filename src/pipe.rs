@@ -104,6 +104,10 @@ pub enum Operation {
     GetInfo,
     ClientPin,
     Reset,
+    // new in v2.1
+    BioEnrollment,
+    // new in v2.1
+    CredentialManagement,
     /// vendors are assigned the range 0x40..=0x7f for custom operations
     Vendor(VendorOperation),
 }
@@ -117,6 +121,8 @@ impl Into<u8> for Operation {
             Operation::GetInfo => 0x04,
             Operation::ClientPin => 0x06,
             Operation::Reset => 0x07,
+            Operation::BioEnrollment => 0x09,
+            Operation::CredentialManagement => 0x0A,
             Operation::Vendor(operation) => operation.into(),
         }
     }
@@ -166,8 +172,11 @@ impl TryFrom<u8> for Operation {
             0x04 => Ok(Operation::GetInfo),
             0x06 => Ok(Operation::ClientPin),
             0x07 => Ok(Operation::Reset),
-            code => Ok(Operation::Vendor(VendorOperation::try_from(code)?)),
-            // _ => Err(()),
+            0x09 => Ok(Operation::BioEnrollment),
+            0x0A => Ok(Operation::CredentialManagement),
+            code @ VendorOperation::FIRST..=VendorOperation::LAST
+                 => Ok(Operation::Vendor(VendorOperation::try_from(code)?)),
+            _ => Err(()),
         }
     }
 }

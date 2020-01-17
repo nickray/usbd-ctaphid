@@ -23,8 +23,14 @@
 //!
 //! Similar to littlefs2, the idea is to run test using this MVP implementation
 
-use core::convert::TryInto;
+use core::{
+    convert::TryInto,
+    ops::DerefMut,
+};
+
 use cortex_m_semihosting::hprintln;
+use derpy::Der;
+
 use crate::{
     authenticator::{
         self,
@@ -38,7 +44,6 @@ use crate::{
         COSE_KEY_LENGTH,
         COSE_KEY_LENGTH_BYTES,
     },
-    derpy::Der,
     types::{
         AssertionResponse,
         AssertionResponses,

@@ -8,6 +8,8 @@ https://fidoalliance.org/specs/fido-v2.0-ps-20190130/fido-client-to-authenticato
 
 */
 
+use heapless_bytes as bytes;
+
 pub mod authenticator;
 
 pub mod constants;
@@ -33,6 +35,5 @@ pub mod insecure;
 // #[cfg(feature = "logging")]
 // use funnel::error;
 
-pub mod bytes;
-pub mod derpy;
 pub mod types;
+
