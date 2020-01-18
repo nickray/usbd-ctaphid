@@ -29,6 +29,7 @@ use core::{
 };
 
 use cortex_m_semihosting::hprintln;
+use cosey::PublicKey as CosePublicKey;
 use derpy::Der;
 
 use crate::{
@@ -88,10 +89,16 @@ pub enum Keypair {
 }
 
 impl Keypair {
-    pub fn serialize_public_key(&self) -> Bytes<COSE_KEY_LENGTH> {
+    pub fn as_cose_public_key(&self) -> cosey::PublicKey {
         match self {
-            Self::P256(keypair) => serialize_nisty_public_key(&keypair.public),
-            Self::Ed25519(keypair) => serialize_salty_public_key(&keypair.public),
+            Self::P256(keypair) => {
+                let cose_variant: nisty::CosePublicKey = keypair.public.clone().into();
+                cose_variant.into()
+            },
+            Self::Ed25519(keypair) => {
+                let cose_variant: salty::CosePublicKey = keypair.public.clone().into();
+                cose_variant.into()
+            }
         }
     }
 
@@ -100,35 +107,11 @@ impl Keypair {
             Self::Ed25519(keypair) => {
                 let sig_fixed = keypair.sign(digest).to_bytes();
                 Bytes::<consts::U72>::try_from_slice(&sig_fixed).unwrap()
-
-
             },
 
             Self::P256(keypair) => {
-
-                // https://tools.ietf.org/html/rfc3279#section-2.2.3
-
-                //  Ecdsa-Sig-Value  ::=  SEQUENCE  {
-                //    r     INTEGER,
-                //    s     INTEGER  }
-
-                let sig_fixed = *keypair.sign_prehashed(digest).as_bytes();
-                let r = &sig_fixed[..32];
-                // hprintln!("r = {:?}", r);
-                let s = &sig_fixed[32..];
-                // hprintln!("s = {:?}", s);
-
-                let mut der = Der::<consts::U72>::new();
-                der.sequence(|der| Ok({
-                    der.non_negative_integer(r)?;
-                    der.non_negative_integer(s)?;
-                })).unwrap();
-                // hprintln!("der = {:?}", &der.as_ref()).unwrap();
-                Bytes::<consts::U72>::try_from_slice(der.as_ref()).unwrap()
-
+                keypair.sign_prehashed(digest).to_asn1_der()
             },
-            // _ => Bytes::<consts::U72>::new()
-            // Self::Ed25519(keypair) => *keypair.sign_prehashed(digest, None).as_bytes(),
         }
     }
 }
@@ -153,87 +136,6 @@ impl Default for InsecureRamAuthenticator {
     }
 }
 
-//// { 1: 2,  // kty (key type): tstr / int  [ 2 = EC2 = elliptic curve with x and y coordinate pair
-////                                           1 = OKP = Octet Key Pair = for EdDSA
-////          // kid, bstr
-////   3: -7, // alg: tstr / int
-//// [ 4:     // key_ops: tstr / int           1 = sign, 2 = verify, 3 = encrypt, 4 = decrypt, ...many more
-////
-////  // the curve: 1  = P-256
-////  -1: 1,
-////  // x-coordinate
-////  -2: b'\xa0\xc3\x14\x06!\xefM\xcc\x06u\xf0\xf5v\x0bXa\xe6\xacm\x8d\xd9O`\xbd\x81\xf1\xe0_\x1a*\xdd\x9e',
-////  // y-coordinate
-////  -3: b'\xb4\xd4L\x94-\xbeVr\xe9C\x13u V\xf4t^\xe4.\xa2\x87I\xfe \xa4\xb0KY\x03\x00\x8c\x01'}
-////
-////  EdDSA
-////   1: 1
-////   3: -8,
-////  -1: 6,
-////  -2: public key bytes
-
-fn serialize_salty_public_key(key: &salty::PublicKey) -> Bytes<COSE_KEY_LENGTH> {
-    let mut buffer = [0u8; COSE_KEY_LENGTH_BYTES];
-
-    let writer = serde_cbor::ser::SliceWrite::new(&mut buffer);
-    let mut ser = serde_cbor::Serializer::new(writer);
-
-    use serde::ser::SerializeMap;
-    use serde::Serializer;
-    let mut map = ser.serialize_map(Some(4)).unwrap();
-
-    // kty (key type) 1 = OKP = Octet Key Pair = for EdDSA
-    map.serialize_key(&1).unwrap();
-    map.serialize_value(&1).unwrap();
-    // alg: -8 = EdDSA
-    map.serialize_key(&3).unwrap();
-    map.serialize_value(&-8).unwrap();
-
-    // the curve: 25519
-    map.serialize_key(&-1).unwrap();
-    map.serialize_value(&6).unwrap();
-    // public key bytes
-    map.serialize_key(&-2).unwrap();
-    map.serialize_value(&Bytes::<consts::U32>::try_from_slice(key.as_bytes()).unwrap()).unwrap();
-    let writer = ser.into_inner();
-    let size = writer.bytes_written();
-
-    Bytes::try_from_slice(&buffer[..size]).unwrap()
-}
-
-fn serialize_nisty_public_key(key: &nisty::PublicKey) -> Bytes<COSE_KEY_LENGTH> {
-    let mut buffer = [0u8; COSE_KEY_LENGTH_BYTES];
-
-    let writer = serde_cbor::ser::SliceWrite::new(&mut buffer);
-    let mut ser = serde_cbor::Serializer::new(writer);
-
-    use serde::ser::SerializeMap;
-    use serde::Serializer;
-    let mut map = ser.serialize_map(Some(5)).unwrap();
-
-    // kty (key type) 2 = EC2 = elliptic curve with x/y coordinate pair
-    map.serialize_key(&1).unwrap();
-    map.serialize_value(&2).unwrap();
-    // alg: -7 = ES256 = ECDSA with SHA-256
-    map.serialize_key(&3).unwrap();
-    map.serialize_value(&-7).unwrap();
-
-    // the curve: P-256
-    map.serialize_key(&-1).unwrap();
-    map.serialize_value(&1).unwrap();
-    // x-coordinate
-    map.serialize_key(&-2).unwrap();
-    map.serialize_value(&Bytes::<consts::U32>::try_from_slice(&key.as_bytes()[..32]).unwrap()).unwrap();
-    // y-coordinate
-    map.serialize_key(&-3).unwrap();
-    map.serialize_value(&Bytes::<consts::U32>::try_from_slice(&key.as_bytes()[32..]).unwrap()).unwrap();
-
-    let writer = ser.into_inner();
-    let size = writer.bytes_written();
-
-    Bytes::try_from_slice(&buffer[..size]).unwrap()
-}
-
 // solo-c uses CredentialId:
 // * rp_id_hash:
 // * (signature_)counter: to be able to sort by recency descending
@@ -247,27 +149,6 @@ pub struct CredentialInner {
     pub alg: i8,
     pub seed: Bytes<consts::U32>,
 }
-
-    // let mut hash = salty::Sha512::new();
-    // hash.update(&self.master_secret);
-    // hash.update(&params.rp.id.as_str().as_bytes());
-    // hash.update(&params.user.id);
-    // let digest: [u8; 64] = hash.finalize();
-    // let seed = nisty::prehash(&digest);
-
-// pub struct GetAssertionParameters {
-//     pub rp_id: String<consts::U64>,
-//     pub client_data_hash: Bytes<consts::U32>,
-//     pub allow_list: Vec<PublicKeyCredentialDescriptor, consts::U8>,
-
-// #[serde(rename_all = "camelCase")]
-// pub struct PublicKeyCredentialDescriptor {
-//     #[serde(rename = "name")]
-//     pub key_type: String<consts::U10>,
-//     pub id: Bytes<consts::U64>,
-//     // https://w3c.github.io/webauthn/#enumdef-authenticatortransport
-//     // transports: ...
-// }
 
 impl authenticator::Api for InsecureRamAuthenticator {
     fn get_assertions(&mut self, params: &GetAssertionParameters) -> Result<AssertionResponses>
@@ -500,7 +381,7 @@ impl authenticator::Api for InsecureRamAuthenticator {
             Keypair::P256(nisty::Keypair::generate_patiently(&seed))
         };
 
-        let credential_public_key = keypair.serialize_public_key();
+        let credential_public_key: CosePublicKey = keypair.as_cose_public_key();
 
         // hprintln!("serialized public_key: {:?}", &credential_public_key).ok();
 

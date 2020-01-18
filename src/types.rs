@@ -19,6 +19,32 @@ pub use cosey as cose;
 pub mod ctap1;
 pub mod ctap2;
 
+/// buffer should be big enough to hold serialized object.
+fn cbor_serialize<T: serde::Serialize>(
+    object: &T,
+    buffer: &mut [u8],
+) -> core::result::Result<usize, serde_cbor::Error> {
+    let writer = serde_cbor::ser::SliceWrite::new(buffer);
+    let mut ser = serde_cbor::Serializer::new(writer);
+
+    object.serialize(&mut ser)?;
+
+    let writer = ser.into_inner();
+    let size = writer.bytes_written();
+
+    Ok(size)
+}
+
+/// may or may not modify buffer to hold temporary data.
+/// buffer may be longer than serialized T.
+fn cbor_deserialize<'de, T: serde::Deserialize<'de>>(
+    buffer: &'de mut [u8],
+) -> core::result::Result<T, serde_cbor::Error> {
+    let mut deserializer = serde_cbor::de::Deserializer::from_mut_slice(buffer);
+    serde::Deserialize::deserialize(&mut deserializer)
+}
+
+
 /// CTAP CBOR is crazy serious about canonical format.
 /// If you change the order here, for instance python-fido2
 /// will no longer parse the entire authenticatorGetInfo
@@ -185,7 +211,7 @@ pub struct AttestedCredentialData {
     // this is where "unlimited non-resident keys" get stored
     // TODO: Model as actual credential ID, with ser/de to bytes (format is up to authenticator)
     pub credential_id: Bytes<consts::U128>,
-    pub credential_public_key: Bytes<COSE_KEY_LENGTH>,
+    pub credential_public_key: cose::PublicKey,//Bytes<COSE_KEY_LENGTH>,
 }
 
 impl AttestedCredentialData {
@@ -199,23 +225,11 @@ impl AttestedCredentialData {
         // raw bytes of credential ID
         bytes.extend_from_slice(&self.credential_id[..self.credential_id.len()]).unwrap();
 
-        // // canonical CBOR encoding of credential public key
-        // let mut buffer = [0u8; ATTESTED_CREDENTIAL_DATA_LENGTH_BYTES];
-        // let writer = serde_cbor::ser::SliceWrite::new(&mut buffer);
-        // let mut ser = serde_cbor::Serializer::new(writer)
-        //     // .packed_format()
-        //     // .pack_starting_with(1)
-        //     // .pack_to_depth(1)
-        // ;
+        // use existing `bytes` buffer
+        let mut cbor_key = [0u8; 128];
+        let l = cbor_serialize(&self.credential_public_key, &mut cbor_key).unwrap();
+        bytes.extend_from_slice(&cbor_key[..l]).unwrap();
 
-        // self.credential_public_key.serialize(&mut ser).unwrap();
-
-        // let writer = ser.into_inner();
-        // let size = writer.bytes_written();
-        // let buffer = writer.into_inner();
-        // bytes.extend_from_slice(&buffer[..size]).unwrap();
-
-        bytes.extend_from_slice(&self.credential_public_key).unwrap();
         Bytes::from(bytes)
     }
 }

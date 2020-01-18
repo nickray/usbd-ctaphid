@@ -8,8 +8,8 @@ edition = "2018"
 [dependencies]
 # cortex-m-funnel = { version = "0.1.0-alpha.1", optional = true }
 cortex-m-semihosting = "0.3.5"
-cosey = { git = "https://github.com/ycrypto/cosey", branch = "main", optional = true }
-# cosey = { path = "../cosey", branch = "main", optional = true }
+# cosey = { git = "https://github.com/ycrypto/cosey", branch = "main", optional = true }
+cosey = { path = "../cosey", optional = true }
 heapless = { version = "0.5.1", default-features = false, features = ["serde"] }
 heapless-bytes = { git = "https://github.com/ycrypto/heapless-bytes", branch = "main", features = ["cbor"] }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
@@ -17,10 +17,14 @@ usb-device = "0.2.3"
 
 # littlefs2 = { version = "0.1.0-alpha.0", optional = true }
 # chacha20 = { version = "0.2.3" }
-derpy = { git = "https://github.com/ycrypto/derpy", branch = "main", optional = true }
-nisty = { version = "0.1.0-alpha.0", default-features = false, optional = true }
+# derpy = { git = "https://github.com/ycrypto/derpy", branch = "main", optional = true }
+derpy = { path = "../derpy", branch = "main", optional = true }
+# nisty = { version = "0.1.0-alpha.0", default-features = false, optional = true }
+# nisty = { git = "https://github.com/ycrypto/nisty", branch = "main", features = ["asn1-der"], optional = true }
+nisty = { path = "../nisty", default-features = false, features = ["asn1-der", "cose"], optional = true }
 # salty = { version = "0.1.0-alpha.0", optional = true }
-salty = { git = "https://github.com/ycrypto/salty", branch = "main", optional = true }
+# salty = { git = "https://github.com/ycrypto/salty", branch = "main", optional = true }
+salty = { path = "../salty", features = ["cose"], optional = true }
 sha2 = { version = "0.8.0", default-features = false, optional = true }
 ufmt = { version = "0.1.0", optional = true}
 
