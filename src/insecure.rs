@@ -28,6 +28,8 @@ use core::{
     ops::DerefMut,
 };
 
+#[cfg(feature = "logging")]
+use funnel::info;
 use cortex_m_semihosting::hprintln;
 use cosey::PublicKey as CosePublicKey;
 use derpy::Der;
@@ -376,8 +378,12 @@ impl authenticator::Api for InsecureRamAuthenticator {
         // let keypair = if eddsa {
         let keypair = if eddsa {
             // prefer Ed25519
+            #[cfg(feature = "logging")]
+            info!("making Ed25519 credential, woo!").ok();
             Keypair::Ed25519(salty::Keypair::from(&seed))
         } else {
+            #[cfg(feature = "logging")]
+            info!("making P256 credential, eww!").ok();
             Keypair::P256(nisty::Keypair::generate_patiently(&seed))
         };
 

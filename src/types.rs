@@ -37,6 +37,7 @@ fn cbor_serialize<T: serde::Serialize>(
 
 /// may or may not modify buffer to hold temporary data.
 /// buffer may be longer than serialized T.
+#[allow(dead_code)]
 fn cbor_deserialize<'de, T: serde::Deserialize<'de>>(
     buffer: &'de mut [u8],
 ) -> core::result::Result<T, serde_cbor::Error> {
