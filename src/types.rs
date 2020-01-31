@@ -9,7 +9,7 @@ use crate::{
         // ATTESTED_CREDENTIAL_DATA_LENGTH_BYTES,
         AUTHENTICATOR_DATA_LENGTH,
         // AUTHENTICATOR_DATA_LENGTH_BYTES,
-        COSE_KEY_LENGTH,
+        // COSE_KEY_LENGTH,
         MESSAGE_SIZE,
         ASN1_SIGNATURE_LENGTH,
     },
@@ -20,7 +20,7 @@ pub mod ctap1;
 pub mod ctap2;
 
 /// buffer should be big enough to hold serialized object.
-fn cbor_serialize<T: serde::Serialize>(
+pub fn cbor_serialize<T: serde::Serialize>(
     object: &T,
     buffer: &mut [u8],
 ) -> core::result::Result<usize, serde_cbor::Error> {
@@ -35,14 +35,10 @@ fn cbor_serialize<T: serde::Serialize>(
     Ok(size)
 }
 
-/// may or may not modify buffer to hold temporary data.
-/// buffer may be longer than serialized T.
-#[allow(dead_code)]
-fn cbor_deserialize<'de, T: serde::Deserialize<'de>>(
-    buffer: &'de mut [u8],
-) -> core::result::Result<T, serde_cbor::Error> {
-    let mut deserializer = serde_cbor::de::Deserializer::from_mut_slice(buffer);
-    serde::Deserialize::deserialize(&mut deserializer)
+pub fn cbor_deserialize<'de, T: serde::Deserialize<'de>>(
+    buffer: &'de [u8],
+) -> core::result::Result<T, ctapcbor::error::Error> {
+    ctapcbor::de::from_bytes(buffer)
 }
 
 

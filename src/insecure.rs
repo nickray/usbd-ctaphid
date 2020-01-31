@@ -30,9 +30,15 @@ use core::{
 
 #[cfg(feature = "logging")]
 use funnel::info;
-use cortex_m_semihosting::hprintln;
+
+// use cortex_m_semihosting::hprintln;
 use cosey::PublicKey as CosePublicKey;
-use derpy::Der;
+use heapless::{
+    Vec,
+    String,
+    consts,
+};
+use serde_indexed::{SerializeIndexed, DeserializeIndexed};
 
 use crate::{
     authenticator::{
@@ -44,8 +50,6 @@ use crate::{
     constants::{
         self,
         AUTHENTICATOR_DATA_LENGTH_BYTES,
-        COSE_KEY_LENGTH,
-        COSE_KEY_LENGTH_BYTES,
     },
     types::{
         AssertionResponse,
@@ -63,25 +67,6 @@ use crate::{
     },
 };
 
-use heapless::{
-    Vec,
-    String,
-    consts,
-};
-use serde::{Serialize, Deserialize};
-
-// use littlefs2::{
-//     ram_storage,
-//     // TODO: fix the macro in littlefs2 to not require these three imports
-//     // Particularly the Result one is bad as it can clobber other things.
-//     consts,
-//     driver,
-//     io::Result,
-// };
-
-// ram_storage!(tiny);
-
-// TODO: generate this in a clean way. e.g. python cryptography SUX
 pub const SOLO_HACKER_ATTN_CERT: [u8; 511] = *include_bytes!("solo-hacker-attn-cert.der");
 pub const SOLO_HACKER_ATTN_KEY: [u8; 32] = *include_bytes!("solo-hacker-attn-key.le.raw");
 
@@ -145,7 +130,7 @@ impl Default for InsecureRamAuthenticator {
 // * authentication tag
 //
 // For resident keys, it uses (CredentialId, UserEntity)
-#[derive(Clone,Debug,Eq,PartialEq,Serialize,Deserialize)]
+#[derive(Clone,Debug,Eq,PartialEq,SerializeIndexed,DeserializeIndexed)]
 pub struct CredentialInner {
     pub user_id: Bytes<consts::U64>,
     pub alg: i8,
@@ -153,115 +138,41 @@ pub struct CredentialInner {
 }
 
 impl authenticator::Api for InsecureRamAuthenticator {
+
     fn get_assertions(&mut self, params: &GetAssertionParameters) -> Result<AssertionResponses>
     {
-        // 1. locate all eligible credentials
-        // if params.allow_list.len() != 1 {
-        //     return Err(Error::
-        // let number_of_credentials: u32 = ...
-
-        // 2-4. PIN stuff
-
-        // 5. process options
-
-        // 6. process extensions
-
-        // 7. collect user consent
-
-        // 8. if no credentials were located in step 1
-        // muy importante: not before step 7!
-        // if number_of_credentials == 0 {
-        //     return Err(Error::NoCredentials);
-        // }
-
-        // 9. if more than one credential found,
-        // order by creation timestampe descending
-
-        // 10. no display:
-
-        // 11. has display:
-
-        // 12. sign client data hash and auth data with selected credential
-
-        // AND NOW SHORTCUT
         if params.allow_list.len() == 0 {
             return Err(Error::NoCredentials);
         }
 
-        assert!(params.allow_list.len() == 1);
-        // let number_of_credentials: u32 = 1;
+        if params.allow_list.len() != 1 {
+            return Err(Error::Other);
+        }
 
         let mut cloned_credential_id = params.allow_list[0].id.clone();
-        let mut deserializer =
-            serde_cbor::de::Deserializer::from_mut_slice(cloned_credential_id.deref_mut());
         let credential_inner: CredentialInner =
-            serde::de::Deserialize::deserialize(&mut deserializer).unwrap();
-        // hprintln!("credential inner: {:?}", &credential_inner);
+            ctapcbor::de::from_bytes(cloned_credential_id.deref_mut()).unwrap();
 
-        //// generate authenticator data
-        //let attested_credential_data = AttestedCredentialData {
-        //    aaguid: self.aaguid.clone(),
-        //    credential_id,
-        //    credential_public_key,
-        //};
-        //// hprintln!("attested credential data = {:?}", attested_credential_data).ok();
-
-        //// flags:
-        ////
-        //// USER_PRESENT = 0x01
-        //// USER_VERIFIED = 0x04
-        //// ATTESTED = 0x40
-        //// EXTENSION_DATA = 0x80
-        //let auth_data = AuthenticatorData {
-        //    rp_id_hash: Bytes::<consts::U32>::from({
-        //        let mut bytes = Vec::<u8, consts::U32>::new();
-        //        bytes.extend_from_slice(&nisty::prehash(&params.rp.id.as_str().as_bytes())).unwrap();
-        //        bytes
-        //    }),
-        //    flags: 0x40,
-        //    // flags: 0x0,
-        //    sign_count: 123,
-        //    attested_credential_data: Some(attested_credential_data.serialize()),
-        //    // attested_credential_data: None,
-        //};
-
-        // now sign it. what to do?
-        // 1. sha-256-digest(&authenticator_data || client_data_hash) -> digest
-        // 2. sign(digest) -> signature-bytes
-        // 3. der-encode(signature-bytes) -> signature-der (for this, cf. ctap_encode_der_sig)
-
-        // let credential_public_key = if credential_inner.alg == -8 {
         let keypair = if credential_inner.alg == -8 {
-            // Ed25519
-            // hprintln!("logging in with 25519").ok();
             Keypair::Ed25519(salty::Keypair::from(&credential_inner.seed.as_ref().try_into().unwrap()))
         } else {
-            // NIST P-256
-            // hprintln!("logging in with NIST").ok();
             let seed_array: [u8; 32] = credential_inner.seed.as_ref().try_into().unwrap();
             Keypair::P256(nisty::Keypair::generate_patiently(&seed_array))
         };
 
-        // let attested_credential_data = AttestedCredentialData {
-        //     aaguid: self.aaguid.clone(),
-        //     credential_id: cloned_credential_id,
-        //     credential_public_key: keypair.serialize_public_key(),
-        // };
+        let rp_id_hash = Bytes::<consts::U32>::try_from_slice(
+            &nisty::prehash(&params.rp_id.as_str().as_bytes()
+        )).unwrap();
+
         let auth_data = AuthenticatorData {
-            rp_id_hash: Bytes::<consts::U32>::from({
-                let mut bytes = Vec::<u8, consts::U32>::new();
-                bytes.extend_from_slice(&nisty::prehash(&params.rp_id.as_str().as_bytes())).unwrap();
-                bytes
-            }),
-            // TODO: what goes here?
+            rp_id_hash,
+            // USER_PRESENT = 0x01
+            // USER_VERIFIED = 0x04
             flags: 0x01, // | 0x40,
-            // flags: 0x0,
             sign_count: self.signature_count,
-            attested_credential_data: None, //Some(attested_credential_data.serialize()),
-            // attested_credential_data: None,
+            attested_credential_data: None,
         };
         self.signature_count += 1;
-        // hprintln!("auth_data = {:?}", &auth_data).ok();
         let serialized_auth_data = auth_data.serialize();
 
         use sha2::digest::Digest;
@@ -269,16 +180,11 @@ impl authenticator::Api for InsecureRamAuthenticator {
         hash.input(&serialized_auth_data);
         hash.input(&params.client_data_hash);
         let digest: [u8; 32] = hash.result().try_into().unwrap();
-        // data.into()
+
         let sig = if credential_inner.alg == -8 {
             let mut buf = [0u8; AUTHENTICATOR_DATA_LENGTH_BYTES + 32];
             let auth_data_size = serialized_auth_data.len();
             buf[..auth_data_size].copy_from_slice(&serialized_auth_data);
-
-            // hprintln!("auth_data_size = {}", auth_data_size).ok();
-            // hprintln!("self.auth_data = {:?}", &serialized_auth_data).ok();
-            // buf[auth_data_size..][..32].copy_from_slice(&params.client_data_hash);
-            // hprintln!("client_param = {:?}", &params.client_data_hash).ok();
             buf[auth_data_size..][..params.client_data_hash.len()].copy_from_slice(&params.client_data_hash);
 
             let sig_fixed = match keypair {
@@ -289,58 +195,35 @@ impl authenticator::Api for InsecureRamAuthenticator {
             };
             Bytes::<consts::U72>::try_from_slice(&sig_fixed).unwrap()
         } else {
-            // let sig = keypair.asn1_sign_prehashed(&digest);
             keypair.asn1_sign_prehashed(&digest)
         };
 
-        // pub user: Option<PublicKeyCredentialUserEntity>,
-        // pub auth_data: Bytes<AUTHENTICATOR_DATA_LENGTH>,
-        // pub signature: Bytes<SIGNATURE_LENGTH>,
-        // pub credential: Option<PublicKeyCredentialDescriptor>,
-        // pub number_of_credentials: Option<u32>,
         let response = AssertionResponse {
-            user: None, //Some(PublicKeyCredentialUserEntity::from(credential_inner.user_id.clone())),
-            // TODO!
+            user: None,
             auth_data: serialized_auth_data,
-            // TODO!
             signature: sig,
             credential: None, //Some(params.allow_list[0].clone()),
             number_of_credentials: None, // Some(1),
-            // number_of_credentials: Some(1),
         };
 
         let mut responses = AssertionResponses::new();
         responses.push(response).unwrap();
 
         Ok(responses)
-
-
     }
 
     fn make_credential(&mut self, params: &MakeCredentialParameters) -> Result<AttestationObject> {
-        // 0. Some general checks?
-
-        // current solo does this
-        if params.client_data_hash.len() != 32 {
-            return Err(Error::InvalidLength);
-        }
-
-        // 1. Check excludeList
-        // TODO
 
         // 2. check pubKeyCredParams algorithm is valid COSE identifier and supported
         let mut supported_algorithm = false;
         let mut eddsa = false;
-        // let mut es256 = false;
         for param in params.pub_key_cred_params.iter() {
             match param.alg {
-                -7 => { /*es256 = true;*/ supported_algorithm = true; },
+                -7 => { supported_algorithm = true; },
                 -8 => { eddsa = true; supported_algorithm = true; },
                 _ => {},
             }
         }
-        // TODO: temporary, remove!!
-        // eddsa = false;
         if !supported_algorithm {
             return Err(Error::UnsupportedAlgorithm);
         }
@@ -358,15 +241,7 @@ impl authenticator::Api for InsecureRamAuthenticator {
             _ => {},
         }
 
-        // 4. optionally, process extensions
-
-        // 5-7. pinAuth handling
-        // TODO
-
-        // 8. request user presence (blink LED, or show user + rp on display if present)
-
         // 9. generate new key pair \o/
-        //
         // We do it quick n' dirty here because YOLO
         let mut hash = salty::Sha512::new();
         hash.update(&self.master_secret);
@@ -478,7 +353,6 @@ impl authenticator::Api for InsecureRamAuthenticator {
         let fmt = String::<consts::U32>::from("packed");
         let att_stmt = AttestationStatement::Packed(packed_attn_stmt);
 
-
         let attestation_object = AttestationObject {
             fmt,
             auth_data: serialized_auth_data,
@@ -492,7 +366,6 @@ impl authenticator::Api for InsecureRamAuthenticator {
 
         use core::str::FromStr;
         let mut versions = Vec::<String<consts::U8>, consts::U2>::new();
-        // versions.push(String::from_str("U2F_V2").unwrap()).unwrap();
         versions.push(String::from_str("FIDO_2_0").unwrap()).unwrap();
 
         AuthenticatorInfo {
@@ -504,35 +377,7 @@ impl authenticator::Api for InsecureRamAuthenticator {
     }
 
     fn reset(&mut self) -> Result<()> {
+        self.master_secret[0] += 1;
         Ok(())
-    }
-}
-
-#[macro_export]
-macro_rules! insecure_ram_authenticator {
-    (api=$AuthenticatorApi:path, ctap_options=$CtapOptions:ty) => {
-        struct InsecureRamAuthenticator {
-        }
-
-        impl InsecureRamAuthenticator {
-        }
-
-        impl $AuthenticatorApi for InsecureRamAuthenticator {
-            fn get_info(&self) -> AuthenticatorInfo {
-
-                AuthenticatorInfo {
-                    versions: &["FIDO_2_0"], // &["U2F_V2", "FIDO_2_0"],
-                    extensions: None, // Some(&["hmac-secret"]),
-                    aaguid: b"AAGUID0123456789",
-                    // options: None, // Some(CtapOptions::default()),
-                    options: Some(<$CtapOptions>::default()),
-                    // max_msg_size: Some(MESSAGE_SIZE),
-                    max_msg_size: Some(7609),
-                    pin_protocols: None, // Some(&[1]),
-                };
-
-            }
-        }
-
     }
 }

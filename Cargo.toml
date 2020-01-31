@@ -9,6 +9,8 @@ edition = "2018"
 cortex-m-funnel = { version = "0.1.0-alpha.1", optional = true }
 cortex-m-semihosting = "0.3.5"
 cosey = { git = "https://github.com/ycrypto/cosey", branch = "main" }
+ctapcbor = { git = "https://github.com/nickray/ctapcbor", branch = "main" }
+# ctapcbor = { path = "../ctapcbor" } # , features = ["ufmt"] }
 # cosey = { path = "../cosey" }
 heapless = { version = "0.5.1", default-features = false, features = ["serde"] }
 heapless-bytes = { git = "https://github.com/ycrypto/heapless-bytes", branch = "main", features = ["cbor"] }
@@ -22,6 +24,7 @@ nisty = { git = "https://github.com/ycrypto/nisty", branch = "main", default-fea
 salty = { git = "https://github.com/ycrypto/salty", branch = "main", features = ["cose"], optional = true }
 sha2 = { version = "0.8.0", default-features = false, optional = true }
 ufmt = { version = "0.1.0", optional = true}
+# ufmt = { git = "https://github.com/nickray/ufmt", optional = true }
 
 serde_cbor = { version = "0.11.0", default-features = false }
 serde-indexed = { git = "https://github.com/ycrypto/serde-indexed", branch = "main" }
@@ -42,3 +45,5 @@ insecure-ram-authenticator = ["derpy", "nisty", "salty/haase", "sha2"]
 # rustc-hash = { git = "https://github.com/nickray/rustc-hash", branch = "nickray-remove-byteorder" }
 # [patch.crates-io]
 # serde_derive = { path = "../serde/serde_derive" }
+# [patch.crates-io]
+# ctapcbor = { path = "../ctapcbor" }

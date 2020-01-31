@@ -26,8 +26,8 @@ pub mod insecure;
 // // TODO: not really sure what's going on here...
 // // Goal: have `logging` feature, that can be completely turned off
 
-// // #[cfg(feature = "logging")]
-// // // use ufmt::UnstableDoAsFormatter;
+// #[cfg(feature = "logging")]
+// // use ufmt::UnstableDoAsFormatter;
 
 // #[cfg(feature = "logging")]
 // use funnel::debug;

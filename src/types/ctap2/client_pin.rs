@@ -1,5 +1,4 @@
 use crate::bytes::{Bytes, consts};
-use serde::{Deserialize, Serialize};
 use serde_indexed::{DeserializeIndexed, SerializeIndexed};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 

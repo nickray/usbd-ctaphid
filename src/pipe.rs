@@ -15,7 +15,6 @@ No state is maintained between transactions.
 use core::convert::TryInto;
 use core::convert::TryFrom;
 use cortex_m_semihosting::hprintln;
-use serde::Serialize;
 use usb_device::{
     bus::{UsbBus},
     endpoint::{EndpointAddress, EndpointIn, EndpointOut},
@@ -23,6 +22,8 @@ use usb_device::{
     // Result as UsbResult,
 };
 
+#[cfg(feature = "logging")]
+use funnel::{debug, info};
 
 use crate::{
     authenticator::{
@@ -68,6 +69,7 @@ impl Response {
             length: size as u16,
         }
     }
+
 }
 
 #[derive(Copy,Clone,Debug,Eq,PartialEq)]
@@ -356,7 +358,7 @@ where
         let mut packet = [0u8; PACKET_SIZE];
         match self.read_endpoint.read(&mut packet) {
             Ok(PACKET_SIZE) => {},
-            Ok(size) => {
+            Ok(_size) => {
                 // error handling?
                 // from spec: "Packets are always fixed size (defined by the endpoint and
                 // HID report descriptors) and although all bytes may not be needed in a
@@ -369,7 +371,7 @@ where
             // both should not occur here, and we can't do anything anyway.
             // Err(UsbError::WouldBlock) => { return; },
             // Err(UsbError::BufferOverflow) => { return; },
-            Err(error) => {
+            Err(_error) => {
                 // hprintln!("error no {}", error as i32).ok();
                 return;
             },
@@ -593,13 +595,13 @@ where
                         // hprintln!("sending response: {:x?}", &self.buffer[..response.length as usize]).ok();
                         self.start_sending(response);
                     },
-                    ctap1::Command::Register(register) => {
+                    ctap1::Command::Register(_register) => {
                         // hprintln!("command {:?}", &register).ok();
                         self.buffer[..2].copy_from_slice(&(ctap1::Error::InsNotSupported as u16).to_be_bytes());
                         let response = Response::from_request_and_size(request, 1);
                         self.start_sending(response);
                     },
-                    ctap1::Command::Authenticate(authenticate) => {
+                    ctap1::Command::Authenticate(_authenticate) => {
                         // hprintln!("command {:?}", &authenticate).ok();
                         self.buffer[..2].copy_from_slice(&(ctap1::Error::InsNotSupported as u16).to_be_bytes());
                         let response = Response::from_request_and_size(request, 1);
@@ -610,6 +612,25 @@ where
         }
     }
 
+    fn response_from_error(&mut self, request: Request, error: AuthenticatorError) -> Response {
+        self.buffer[0] = error as u8;
+        Response::from_request_and_size(request, 1)
+    }
+
+    fn response_from_object<T: serde::Serialize>(&mut self, request: Request, object: T) -> Response {
+        let size = 1 + match
+            crate::types::cbor_serialize(&object, &mut self.buffer[1..])
+        {
+            Ok(n) => n,
+            Err(_) => {
+                return self.response_from_error(request, AuthenticatorError::Other);
+            }
+        };
+
+        self.buffer[0] = 0;
+        Response::from_request_and_size(request, size)
+    }
+
     fn handle_cbor(&mut self, request: Request) {
         let data = &self.buffer[..request.length as usize];
         // hprintln!("data: {:?}", data).ok();
@@ -618,36 +639,39 @@ where
             return;
         }
 
-        let operation = match Operation::try_from(data[0]) {
+        let operation_u8: u8 = data[0];
+
+        let operation = match Operation::try_from(operation_u8) {
             Ok(operation) => {
-                // hprintln!("Operation  {:?}", &operation).ok();
                 operation
             },
             Err(_) => {
-                // hprintln!("Unknown operation code {:x?}", data[0]).ok();
-                return;
+                info!("authenticator command {:?}", operation_u8).ok();
+                self.buffer[0] = AuthenticatorError::InvalidCommand as u8;
+                let response = Response::from_request_and_size(request, 1);
+                return self.start_sending(response);
             },
         };
 
+        // let operation = Operation::try_from(operation_u8).unwrap_or_else(|()| {
+        //         info!("authenticator command {:?}", operation_u8).ok();
+        //         self.buffer[0] = AuthenticatorError::InvalidCommand as u8;
+        //         let response = Response::from_request_and_size(request, 1);
+        //         return self.start_sending(response);
+        // });
+
         match operation {
             Operation::GetAssertion => {
-                // hprintln!("received authenticatorGetAssertion").ok();
-                // hprintln!("with data: {:?}", &self.buffer[1..request.length as usize]).ok();
+                info!("authenticatorGetAssertion").ok();
+                debug!("data = {:?}", &self.buffer[1..request.length as usize]).ok();
 
-                let buffer_backup = self.buffer.clone();
-
-                let mut deserializer = serde_cbor::de::Deserializer::from_mut_slice(&mut self.buffer[1..]);
-                // let params: GetAssertionParameters =
-                //     serde::de::Deserialize::deserialize(&mut deserializer).unwrap();
-
-                // hprintln!("params: {:?}", &params).ok();
-                let params: GetAssertionParameters = match serde::de::Deserialize::deserialize(&mut deserializer) {
+                let params: GetAssertionParameters = match
+                    crate::types::cbor_deserialize(&mut self.buffer[1..])
+                {
                     Ok(params) => params,
-                    Err(error) => {
-                        // hprintln!("error decoding GetAssertionParameters: {:?}", error).ok();
-                        // hprintln!("from data: {:?}", &buffer_backup[1..request.length as usize]).ok();
-                        self.buffer[0] = AuthenticatorError::InvalidCbor as u8;
-                        let response = Response::from_request_and_size(request, 1);
+                    Err(_error) => {
+                        info!("GA deser error").ok();
+                        let response = self.response_from_error(request, AuthenticatorError::InvalidCbor);
                         self.start_sending(response);
                         return;
                     }
@@ -655,126 +679,71 @@ where
 
                 match self.authenticator.get_assertions(&params) {
                     Err(error) => {
-                        self.buffer[0] = error as u8;
-                        let response = Response::from_request_and_size(request, 1);
+                        info!("GA get_assertions error {}", error as u8).ok();
+                        let response = self.response_from_error(request, error);
                         self.start_sending(response);
                     },
+
                     Ok(assertion_responses) => {
-                        // hprintln!("got assertion_responses: {:?}", &assertion_responses).ok();
-                        self.buffer[0] = 0;
-
-                        let writer = serde_cbor::ser::SliceWrite::new(&mut self.buffer[1..]);
-                        let mut ser = serde_cbor::Serializer::new(writer)
-                            // .packed_format()
-                            // .pack_starting_with(1)
-                            // .pack_to_depth(2)
-                        ;
-
-                        let attestation_object = &assertion_responses[0];
-                        attestation_object.serialize(&mut ser).unwrap();
-
-                        let writer = ser.into_inner();
-                        let size = 1 + writer.bytes_written();
-
-                        // hprintln!("sending response: {:?}", attestation_object).ok();
-                        // hprintln!("serialized response: {:?}", &self.buffer[1..size]).ok();
-
-                        let response = Response::from_request_and_size(request, size);
+                        let response = self.response_from_object(request, &assertion_responses[0]);
                         self.start_sending(response);
                     },
                 }
             },
 
             Operation::MakeCredential => {
-                // hprintln!("received authenticatorMakeCredential").ok();
-                let buffer_backup = self.buffer.clone();
+                info!("authenticatorMakeCredential").ok();
+                debug!("data = {:?}", &self.buffer[1..request.length as usize]).ok();
 
-                let mut deserializer = serde_cbor::de::Deserializer::from_mut_slice(&mut self.buffer[1..]);
-                    // .packed_starts_with(1);
-                let params: MakeCredentialParameters = match serde::de::Deserialize::deserialize(&mut deserializer) {
+                let params: MakeCredentialParameters = match
+                    crate::types::cbor_deserialize(&mut self.buffer[1..])
+                {
                     Ok(params) => params,
                     Err(error) => {
-                        // hprintln!("error decoding MakeCredentialParameters: {:?}", error).ok();
-                        // hprintln!("from data: {:?}", &buffer_backup[1..request.length as usize]).ok();
-                        self.buffer[0] = AuthenticatorError::InvalidCbor as u8;
-                        let response = Response::from_request_and_size(request, 1);
-                        self.start_sending(response);
-                        return;
+                        info!("MC deser error {:?}", error as u8).ok();
+                        let response = self.response_from_error(request, AuthenticatorError::InvalidCbor);
+                        return self.start_sending(response);
                     }
                 };
 
-                // hprintln!("params: {:?}", &params).ok();
-
                 match self.authenticator.make_credential(&params) {
                     Err(error) => {
-                        self.buffer[0] = error as u8;
-                        let response = Response::from_request_and_size(request, 1);
+                        info!("MC make_credential error {}", error as u8).ok();
+                        let response = self.response_from_error(request, error);
                         self.start_sending(response);
                     },
+
                     Ok(attestation_object) => {
-                        self.buffer[0] = 0;
-
-                        let writer = serde_cbor::ser::SliceWrite::new(&mut self.buffer[1..]);
-                        let mut ser = serde_cbor::Serializer::new(writer)
-                            // .packed_format()
-                            // .pack_starting_with(1)
-                            // .pack_to_depth(1)
-                        ;
-
-                        attestation_object.serialize(&mut ser).unwrap();
-
-                        let writer = ser.into_inner();
-                        let size = 1 + writer.bytes_written();
-
-                        // hprintln!("sending response: {:?}", &attestation_object).ok();
-                        // hprintln!("serialized response: {:?}", &self.buffer[1..size]).ok();
-
-                        let response = Response::from_request_and_size(request, size);
+                        let response = self.response_from_object(request, &attestation_object);
                         self.start_sending(response);
                     },
                 }
             },
 
             Operation::GetInfo => {
-                // hprintln!("received authenticatorGetInfo").ok();
+                info!("authenticatorGetInfo").ok();
 
                 let authenticator_info = self.authenticator.get_info();
-                // hprintln!("authenticator_info = {:?}", &authenticator_info).ok();
 
-                // status: 0  = success;
+                let size = 1 + match
+                    crate::types::cbor_serialize(&authenticator_info, &mut self.buffer[1..])
+                {
+                    Ok(n) => n,
+                    Err(_) => {
+                        self.buffer[0] = AuthenticatorError::Other as u8;
+                        let response = Response::from_request_and_size(request, 1);
+                        return self.start_sending(response);
+                    }
+                };
+
                 self.buffer[0] = 0;
-                // actual payload
-                let writer = serde_cbor::ser::SliceWrite::new(&mut self.buffer[1..]);
-                let mut ser = serde_cbor::Serializer::new(writer)
-                    // .packed_format()
-                    // .pack_starting_with(1)
-                    // .pack_to_depth(1)
-                ;
-
-                // hprintln!("returning info {:?}", &authenticator_info).ok();
-                authenticator_info.serialize(&mut ser).unwrap();
-
-                let writer = ser.into_inner();
-                let size = 1 + writer.bytes_written();
-
-                // let mut scratch = [0u8; 128];
-                // let mut a: AuthenticatorInfo = serde_cbor::de::from_slice_with_scratch(
-                //     &self.buffer[1..size], &mut scratch).unwrap()/
-                // let mut a: AuthenticatorInfo = serde_cbor::de::from_mut_slice(
-                //     &mut self.buffer[1..size]).unwrap()/
-
-                // let mut scratch = [0u8; 128];
-                // let authn: AuthenticatorInfo = serde_cbor::de::from_slice_with_scratch(
-                //     &self.buffer[1..size], &mut scratch).unwrap();
-
-                // hprintln!("using serde, wrote {} bytes: {:x?}",
-                //           size, &self.buffer[..size]).ok();
                 let response = Response::from_request_and_size(request, size);
                 self.start_sending(response);
             },
 
             Operation::Reset => {
-                // hprintln!("received authenticatorReset").ok();
+                info!("authenticatorReset").ok();
+
                 match self.authenticator.reset() {
                     Ok(_) =>  { self.buffer[0] = 0; },
                     Err(error) => { self.buffer[0] = error as u8; },
@@ -783,9 +752,12 @@ where
                 self.start_sending(response);
             },
 
-            _ => {
-                hprintln!("Operation {:?} not implemented", operation).ok();
-                return;
+            unknown => {
+                let unknown: u8 = unknown.into();
+                info!("authenticator command {:?}", unknown).ok();
+                self.buffer[0] = AuthenticatorError::InvalidCommand as u8;
+                let response = Response::from_request_and_size(request, 1);
+                self.start_sending(response);
             },
         }
     }

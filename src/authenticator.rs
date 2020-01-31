@@ -48,7 +48,7 @@ trait Wink {
 
 pub type Result<T> = core::result::Result<T, Error>;
 
-#[derive(Clone,Debug,Eq,PartialEq)]
+#[derive(Clone,Copy,Debug,Eq,PartialEq)]
 pub enum Error {
     Success = 0x00,
     InvalidCommand = 0x01,
