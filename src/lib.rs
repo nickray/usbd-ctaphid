@@ -8,17 +8,17 @@ https://fidoalliance.org/specs/fido-v2.0-ps-20190130/fido-client-to-authenticato
 
 */
 
-use heapless_bytes as bytes;
+// use heapless_bytes as bytes;
 
-pub mod authenticator;
+// pub mod authenticator;
 
 pub mod constants;
 pub mod class;
 pub use class::CtapHid;
 pub mod pipe;
 
-#[cfg(feature = "insecure-ram-authenticator")]
-pub mod insecure;
+// #[cfg(feature = "insecure-ram-authenticator")]
+// pub mod insecure;
 
 // #[cfg(not(feature = "logging"))]
 // mod logging;
@@ -35,5 +35,4 @@ pub mod insecure;
 // #[cfg(feature = "logging")]
 // use funnel::error;
 
-pub mod types;
-
+// pub mod types;

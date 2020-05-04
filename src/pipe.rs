@@ -14,6 +14,16 @@ No state is maintained between transactions.
 
 use core::convert::TryInto;
 use core::convert::TryFrom;
+
+use ctap_types::{
+    authenticator::Error as AuthenticatorError,
+    ctaphid::Operation,
+    rpc::TransportEndpoint,
+    serde::{cbor_serialize, cbor_deserialize},
+};
+
+// use serde::Serialize;
+#[cfg(feature = "semihosting")]
 use cortex_m_semihosting::hprintln;
 use usb_device::{
     bus::{UsbBus},
@@ -26,28 +36,17 @@ use usb_device::{
 use funnel::{debug, info};
 
 use crate::{
-    authenticator::{
-        Api as AuthenticatorApi,
-        Error as AuthenticatorError,
-    },
     constants::{
         // 7609
         MESSAGE_SIZE,
         // 64
         PACKET_SIZE,
     },
-    types::{
-        // AssertionResponse,
-        // AuthenticatorInfo,
-        GetAssertionParameters,
-        MakeCredentialParameters,
-        ctap1,
-    },
 };
 
 /// The actual payload of given length is dealt with separately
 #[derive(Copy,Clone,Debug,Eq,PartialEq)]
-struct Request {
+pub struct Request {
     channel: u32,
     command: Command,
     length: u16,
@@ -55,7 +54,7 @@ struct Request {
 
 /// The actual payload of given length is dealt with separately
 #[derive(Copy,Clone,Debug,Eq,PartialEq)]
-struct Response {
+pub struct Response {
     channel: u32,
     command: Command,
     length: u16,
@@ -73,7 +72,7 @@ impl Response {
 }
 
 #[derive(Copy,Clone,Debug,Eq,PartialEq)]
-struct MessageState {
+pub struct MessageState {
     // sequence number of next continuation packet
     next_sequence: u8,
     // number of bytes of message payload transmitted so far
@@ -94,92 +93,6 @@ impl MessageState {
     pub fn absorb_packet(&mut self) {
         self.next_sequence += 1;
         self.transmitted += PACKET_SIZE - 5;
-    }
-}
-
-/// the authenticator API, consisting of "operations"
-#[derive(Copy,Clone,Debug,Eq,PartialEq)]
-pub enum Operation {
-    MakeCredential,
-    GetAssertion,
-    GetNextAssertion,
-    GetInfo,
-    ClientPin,
-    Reset,
-    // new in v2.1
-    BioEnrollment,
-    // new in v2.1
-    CredentialManagement,
-    /// vendors are assigned the range 0x40..=0x7f for custom operations
-    Vendor(VendorOperation),
-}
-
-impl Into<u8> for Operation {
-    fn into(self) -> u8 {
-        match self {
-            Operation::MakeCredential => 0x01,
-            Operation::GetAssertion => 0x02,
-            Operation::GetNextAssertion => 0x08,
-            Operation::GetInfo => 0x04,
-            Operation::ClientPin => 0x06,
-            Operation::Reset => 0x07,
-            Operation::BioEnrollment => 0x09,
-            Operation::CredentialManagement => 0x0A,
-            Operation::Vendor(operation) => operation.into(),
-        }
-    }
-}
-
-impl Operation {
-    pub fn into_u8(self) -> u8 {
-        self.into()
-    }
-}
-
-/// Vendor CTAP2 operations, from 0x40 to 0x7f.
-#[derive(Copy,Clone,Debug,Eq,PartialEq)]
-pub struct VendorOperation(u8);
-
-impl VendorOperation {
-    pub const FIRST: u8 = 0x40;
-    pub const LAST: u8 = 0x7f;
-}
-
-impl TryFrom<u8> for VendorOperation {
-    type Error = ();
-
-    fn try_from(from: u8) -> core::result::Result<Self, ()> {
-        match from {
-            // code if code >= Self::FIRST && code <= Self::LAST => Ok(VendorOperation(code)),
-            code @ Self::FIRST..=Self::LAST => Ok(VendorOperation(code)),
-            _ => Err(()),
-        }
-    }
-}
-
-impl Into<u8> for VendorOperation {
-    fn into(self) -> u8 {
-        self.0
-    }
-}
-
-impl TryFrom<u8> for Operation {
-    type Error = ();
-
-    fn try_from(from: u8) -> core::result::Result<Operation, ()> {
-        match from {
-            0x01 => Ok(Operation::MakeCredential),
-            0x02 => Ok(Operation::GetAssertion),
-            0x08 => Ok(Operation::GetNextAssertion),
-            0x04 => Ok(Operation::GetInfo),
-            0x06 => Ok(Operation::ClientPin),
-            0x07 => Ok(Operation::Reset),
-            0x09 => Ok(Operation::BioEnrollment),
-            0x0A => Ok(Operation::CredentialManagement),
-            code @ VendorOperation::FIRST..=VendorOperation::LAST
-                 => Ok(Operation::Vendor(VendorOperation::try_from(code)?)),
-            _ => Err(()),
-        }
     }
 }
 
@@ -278,32 +191,32 @@ impl Into<u8> for Command {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[allow(unused)]
-enum State {
+pub enum State {
     Idle,
 
     // if request payload data is larger than one packet
     Receiving((Request, MessageState)),
 
-    // the request message is ready, need to dispatch to "app"
-    // Dispatching(Request)
+    // Processing(Request),
 
-    // the request message is dispatched to app, waiting for it to be processed
-    Processing(Request),
+    // // the request message is ready, need to dispatch to authenticator
+    // Dispatching((Request, Ctap2Request)),
 
-    ResponsePending(Response),
+    // waiting for response from authenticator
+    WaitingOnAuthenticator(Request),
+
+    WaitingToSend(Response),
+
     Sending((Response, MessageState)),
 }
 
-pub struct Pipe<'alloc, Authenticator, Bus>
-where
-    Authenticator: AuthenticatorApi,
-    Bus: UsbBus,
-{
+pub struct Pipe<'alloc, 'rpc, Bus: UsbBus> {
+
     read_endpoint: EndpointOut<'alloc, Bus>,
     write_endpoint: EndpointIn<'alloc, Bus>,
-    state: State,
+    pub state: State,
 
-    authenticator: &'alloc mut Authenticator,
+    pub rpc: TransportEndpoint<'rpc>,
 
     // shared between requests and responses, due to size
     buffer: [u8; MESSAGE_SIZE],
@@ -314,22 +227,23 @@ where
 
 }
 
-impl<'alloc, Authenticator, Bus> Pipe<'alloc, Authenticator, Bus>
-where
-    Authenticator: AuthenticatorApi,
-    Bus: UsbBus,
-{
+impl<'alloc, 'rpc, Bus: UsbBus> Pipe<'alloc, 'rpc, Bus> {
+
+    // pub fn borrow_mut_authenticator(&mut self) -> &mut Authenticator {
+    //     &mut self.authenticator
+    // }
+
     pub(crate) fn new(
         read_endpoint: EndpointOut<'alloc, Bus>,
         write_endpoint: EndpointIn<'alloc, Bus>,
-        authenticator: &'alloc mut Authenticator,
+        rpc: TransportEndpoint<'rpc>,
     ) -> Self
     {
         Self {
             read_endpoint,
             write_endpoint,
             state: State::Idle,
-            authenticator,
+            rpc,
             buffer: [0u8; MESSAGE_SIZE],
             last_channel: 0,
         }
@@ -353,6 +267,10 @@ where
         &self.write_endpoint
     }
 
+    /// This method handles CTAP packets (64 bytes), until it has assembled
+    /// a CTAP message, with which it then calls `dispatch_message`.
+    ///
+    /// During these calls, we can be in states: Idle, Receiving, Dispatching.
     pub(crate) fn read_and_handle_packet(&mut self) {
         // hprintln!("got a packet!").ok();
         let mut packet = [0u8; PACKET_SIZE];
@@ -377,8 +295,10 @@ where
             },
         };
 
+        // packet is 64 bytes, reading 4 will not panic
         let channel = u32::from_be_bytes(packet[..4].try_into().unwrap());
         // hprintln!("channel {}", channel).ok();
+
         let is_initialization = (packet[4] >> 7) != 0;
         // hprintln!("is_initialization {}", is_initialization).ok();
 
@@ -393,6 +313,7 @@ where
 
             let command_number = packet[4] & !0x80;
             // hprintln!("command number {}", command_number).ok();
+
             let command = match Command::try_from(command_number) {
                 Ok(command) => command,
                 // `solo ls` crashes here as it uses command 0x86
@@ -431,8 +352,7 @@ where
                 // request fits in one packet
                 self.buffer[..length as usize]
                     .copy_from_slice(&packet[7..][..length as usize]);
-                self.state = State::Processing(request);
-                self.dispatch_request();
+                self.dispatch_request(request);
                 return;
             }
         } else {
@@ -469,9 +389,7 @@ where
                         let missing = request.length as usize - message_state.transmitted;
                         self.buffer[message_state.transmitted..payload_length]
                             .copy_from_slice(&packet[5..][..missing]);
-                        self.state = State::Processing(request);
-                        // hprintln!("got all we need, let's dispatch").ok();
-                        self.dispatch_request();
+                        self.dispatch_request(request);
                     }
                 },
                 _ => {
@@ -482,149 +400,150 @@ where
         }
     }
 
-    fn dispatch_request(&mut self) {
-        // TODO: can we guarantee only being called in this state?
-        if let State::Processing(request) = self.state {
-            // dispatch request further
-            match request.command {
-                Command::Init => {
-                    // hprintln!("command INIT!").ok();
-                    // hprintln!("data: {:?}", &self.buffer[..request.length as usize]).ok();
-                    match request.channel {
-                        // broadcast channel ID - request for assignment
-                        0xFFFF_FFFF => {
-                            if request.length != 8 {
-                                // error
-                            } else {
-                                self.last_channel += 1;
-                                // hprintln!(
-                                //     "assigned channel {}", self.last_channel).ok();
-                                let _nonce = &self.buffer[..8];
-                                let response = Response {
-                                    channel: 0xFFFF_FFFF,
-                                    command: request.command,
-                                    length: 17,
-                                };
+    fn dispatch_request(&mut self, request: Request) {
+        // dispatch request further
+        match request.command {
+            Command::Init => {
+                // hprintln!("command INIT!").ok();
+                // hprintln!("data: {:?}", &self.buffer[..request.length as usize]).ok();
+                match request.channel {
+                    // broadcast channel ID - request for assignment
+                    0xFFFF_FFFF => {
+                        if request.length != 8 {
+                            // error
+                        } else {
+                            self.last_channel += 1;
+                            // hprintln!(
+                            //     "assigned channel {}", self.last_channel).ok();
+                            let _nonce = &self.buffer[..8];
+                            let response = Response {
+                                channel: 0xFFFF_FFFF,
+                                command: request.command,
+                                length: 17,
+                            };
 
-                                self.buffer[8..12].copy_from_slice(&self.last_channel.to_be_bytes());
-                                // CTAPHID protocol version
-                                self.buffer[12] = 2;
-                                // major device version number
-                                self.buffer[13] = 0;
-                                // minor device version number
-                                self.buffer[14] = 0;
-                                // build device version number
-                                self.buffer[15] = 0;
-                                // capabilities flags
-                                // 0x1: implements WINK
-                                // 0x4: implements CBOR
-                                // 0x8: does not implement MSG
-                                // self.buffer[16] = 0x01 | 0x08;
-                                self.buffer[16] = 0x01 | 0x04;
-                                self.start_sending(response);
-                            }
-                        },
-                        0 => {
-                            // this is an error / reserved number
-                        },
-                        _ => {
-                            // this is assumedly the active channel,
-                            // already allocated to a client
-                            // TODO: "reset"
+                            self.buffer[8..12].copy_from_slice(&self.last_channel.to_be_bytes());
+                            // CTAPHID protocol version
+                            self.buffer[12] = 2;
+                            // major device version number
+                            self.buffer[13] = 0;
+                            // minor device version number
+                            self.buffer[14] = 0;
+                            // build device version number
+                            self.buffer[15] = 0;
+                            // capabilities flags
+                            // 0x1: implements WINK
+                            // 0x4: implements CBOR
+                            // 0x8: does not implement MSG
+                            // self.buffer[16] = 0x01 | 0x08;
+                            self.buffer[16] = 0x01 | 0x04;
+                            self.start_sending(response);
                         }
-                    }
-                },
-
-                Command::Ping => {
-                    // hprintln!("received PING!").ok();
-                    // hprintln!("data: {:?}", &self.buffer[..request.length as usize]).ok();
-                    let response = Response::from_request_and_size(request, request.length as usize);
-                    self.start_sending(response);
-                },
-
-                Command::Wink => {
-                    // hprintln!("received WINK!").ok();
-                    // TODO: request.length should be zero
-                    // TODO: callback "app"
-                    let response = Response::from_request_and_size(request, 1);
-                    self.start_sending(response);
-                },
-
-                Command::Cbor => {
-                    // hprintln!("command CBOR!").ok();
-                    self.handle_cbor(request);
-                },
-
-                Command::Msg => {
-                    // hprintln!("command MSG!").ok();
-                    self.handle_msg(request);
-                },
-
-                // TODO: handle other requests
-                _ => {
-                    // hprintln!("unknown command {:?}", request.command).ok();
-                },
-            }
-        }
-    }
-
-    fn handle_msg(&mut self, request: Request) {
-        // this is the U2F/CTAP1 layer.
-        // we handle it by mapping to CTAP2, similar to how user agents
-        // map CTAP2 to CTAP1.
-        // hprintln!("data = {:?}", &self.buffer[..request.length as usize]).ok();
-
-        let command = ctap1::Command::try_from(&self.buffer[..request.length as usize]);
-        match command {
-            Err(error) => {
-                // hprintln!("ERROR").ok();
-                self.buffer[..2].copy_from_slice(&(error as u16).to_be_bytes());
-                let response = Response::from_request_and_size(request, 2);
-                self.start_sending(response);
-            },
-            Ok(command) => {
-                match command {
-                    ctap1::Command::Version => {
-                        // hprintln!("U2F_VERSION").ok();
-                        // GetVersion
-                        // self.buffer[0] = 0;
-                        self.buffer[..6].copy_from_slice(b"U2F_V2");
-                        // self.buffer[6..][..2].copy_from_slice(ctap1::NoError::to_be_bytes());
-                        self.buffer[6..][..2].copy_from_slice(&(ctap1::NO_ERROR).to_be_bytes());
-                        let response = Response::from_request_and_size(request, 8);
-                        // hprintln!("sending response: {:x?}", &self.buffer[..response.length as usize]).ok();
-                        self.start_sending(response);
                     },
-                    ctap1::Command::Register(_register) => {
-                        // hprintln!("command {:?}", &register).ok();
-                        self.buffer[..2].copy_from_slice(&(ctap1::Error::InsNotSupported as u16).to_be_bytes());
-                        let response = Response::from_request_and_size(request, 1);
-                        self.start_sending(response);
+                    0 => {
+                        // this is an error / reserved number
                     },
-                    ctap1::Command::Authenticate(_authenticate) => {
-                        // hprintln!("command {:?}", &authenticate).ok();
-                        self.buffer[..2].copy_from_slice(&(ctap1::Error::InsNotSupported as u16).to_be_bytes());
-                        let response = Response::from_request_and_size(request, 1);
-                        self.start_sending(response);
+                    _ => {
+                        // this is assumedly the active channel,
+                        // already allocated to a client
+                        // TODO: "reset"
                     }
                 }
-            }
+            },
+
+            Command::Ping => {
+                // hprintln!("received PING!").ok();
+                // hprintln!("data: {:?}", &self.buffer[..request.length as usize]).ok();
+                let response = Response::from_request_and_size(request, request.length as usize);
+                self.start_sending(response);
+            },
+
+            Command::Wink => {
+                // hprintln!("received WINK!").ok();
+                // TODO: request.length should be zero
+                // TODO: callback "app"
+                let response = Response::from_request_and_size(request, 1);
+                self.start_sending(response);
+            },
+
+            Command::Cbor => {
+                // hprintln!("command CBOR!").ok();
+                self.handle_cbor(request);
+            },
+
+            // Command::Msg => {
+            //     // hprintln!("command MSG!").ok();
+            //     self.handle_msg(request);
+            // },
+
+            // TODO: handle other requests
+            _ => {
+                // hprintln!("unknown command {:?}", request.command).ok();
+            },
         }
     }
+
+    // fn handle_msg(&mut self, request: Request) {
+    //     // this is the U2F/CTAP1 layer.
+    //     // we handle it by mapping to CTAP2, similar to how user agents
+    //     // map CTAP2 to CTAP1.
+    //     // hprintln!("data = {:?}", &self.buffer[..request.length as usize]).ok();
+
+    //     let command = ctap1::Command::try_from(&self.buffer[..request.length as usize]);
+    //     match command {
+    //         Err(error) => {
+    //             // hprintln!("ERROR").ok();
+    //             self.buffer[..2].copy_from_slice(&(error as u16).to_be_bytes());
+    //             let response = Response::from_request_and_size(request, 2);
+    //             self.start_sending(response);
+    //         },
+    //         Ok(command) => {
+    //             match command {
+    //                 ctap1::Command::Version => {
+    //                     // hprintln!("U2F_VERSION").ok();
+    //                     // GetVersion
+    //                     // self.buffer[0] = 0;
+    //                     self.buffer[..6].copy_from_slice(b"U2F_V2");
+    //                     // self.buffer[6..][..2].copy_from_slice(ctap1::NoError::to_be_bytes());
+    //                     self.buffer[6..][..2].copy_from_slice(&(ctap1::NO_ERROR).to_be_bytes());
+    //                     let response = Response::from_request_and_size(request, 8);
+    //                     // hprintln!("sending response: {:x?}", &self.buffer[..response.length as usize]).ok();
+    //                     self.start_sending(response);
+    //                 },
+    //                 ctap1::Command::Register(_register) => {
+    //                     // hprintln!("command {:?}", &register).ok();
+    //                     self.buffer[..2].copy_from_slice(&(ctap1::Error::InsNotSupported as u16).to_be_bytes());
+    //                     let response = Response::from_request_and_size(request, 1);
+    //                     self.start_sending(response);
+    //                 },
+    //                 ctap1::Command::Authenticate(_authenticate) => {
+    //                     // hprintln!("command {:?}", &authenticate).ok();
+    //                     self.buffer[..2].copy_from_slice(&(ctap1::Error::InsNotSupported as u16).to_be_bytes());
+    //                     let response = Response::from_request_and_size(request, 1);
+    //                     self.start_sending(response);
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
 
     fn response_from_error(&mut self, request: Request, error: AuthenticatorError) -> Response {
         self.buffer[0] = error as u8;
         Response::from_request_and_size(request, 1)
     }
 
-    fn response_from_object<T: serde::Serialize>(&mut self, request: Request, object: T) -> Response {
-        let size = 1 + match
-            crate::types::cbor_serialize(&object, &mut self.buffer[1..])
-        {
-            Ok(n) => n,
-            Err(_) => {
-                return self.response_from_error(request, AuthenticatorError::Other);
+    fn response_from_object<T: serde::Serialize>(&mut self, request: Request, object: Option<T>) -> Response {
+        let size = if let Some(object) = object {
+            1 + match
+                cbor_serialize(&object, &mut self.buffer[1..])
+            {
+                Ok(ser) => ser.len(),
+                Err(_) => {
+                    return self.response_from_error(request, AuthenticatorError::Other);
+                }
             }
+        } else {
+            1
         };
 
         self.buffer[0] = 0;
@@ -648,129 +567,225 @@ where
             Err(_) => {
                 info!("authenticator command {:?}", operation_u8).ok();
                 self.buffer[0] = AuthenticatorError::InvalidCommand as u8;
-                let response = Response::from_request_and_size(request, 1);
+                let response = self::Response::from_request_and_size(request, 1);
                 return self.start_sending(response);
             },
         };
 
-        // let operation = Operation::try_from(operation_u8).unwrap_or_else(|()| {
-        //         info!("authenticator command {:?}", operation_u8).ok();
-        //         self.buffer[0] = AuthenticatorError::InvalidCommand as u8;
-        //         let response = Response::from_request_and_size(request, 1);
-        //         return self.start_sending(response);
-        // });
+        // use ctap_types::ctap2::*;
+        use ctap_types::authenticator::*;
 
         match operation {
-            Operation::GetAssertion => {
-                info!("authenticatorGetAssertion").ok();
-                debug!("data = {:?}", &self.buffer[1..request.length as usize]).ok();
-
-                let params: GetAssertionParameters = match
-                    crate::types::cbor_deserialize(&mut self.buffer[1..])
+            Operation::MakeCredential => {
+                info!("authenticatorMakeCredential").ok();
+                let params: ctap2::make_credential::Parameters = match cbor_deserialize(&mut self.buffer[1..])
                 {
                     Ok(params) => params,
                     Err(_error) => {
-                        info!("GA deser error").ok();
+                        // info!("MC deser error {:?}", error as u8).ok();
+                        // info!("MC deser error {:?}", error).ok();
                         let response = self.response_from_error(request, AuthenticatorError::InvalidCbor);
-                        self.start_sending(response);
-                        return;
+                        return self.start_sending(response);
                     }
                 };
+                // TODO: ensure earlier that RPC send queue is empty
+                self.rpc.send.enqueue(Request::Ctap2(ctap2::Request::MakeCredential(params))).unwrap();
+                self.state = State::WaitingOnAuthenticator(request);
+            }
 
-                match self.authenticator.get_assertions(&params) {
-                    Err(error) => {
-                        info!("GA get_assertions error {}", error as u8).ok();
-                        let response = self.response_from_error(request, error);
-                        self.start_sending(response);
-                    },
+            Operation::GetAssertion => {
+                info!("authenticatorGetAssertion").ok();
 
-                    Ok(assertion_responses) => {
-                        let response = self.response_from_object(request, &assertion_responses[0]);
-                        self.start_sending(response);
-                    },
-                }
-            },
-
-            Operation::MakeCredential => {
-                info!("authenticatorMakeCredential").ok();
-                debug!("data = {:?}", &self.buffer[1..request.length as usize]).ok();
-
-                let params: MakeCredentialParameters = match
-                    crate::types::cbor_deserialize(&mut self.buffer[1..])
+                let params: ctap2::get_assertion::Parameters = match cbor_deserialize(&mut self.buffer[1..])
                 {
                     Ok(params) => params,
                     Err(error) => {
-                        info!("MC deser error {:?}", error as u8).ok();
+                        // info!("GA deser error {:?}", error as u8).ok();
+                        // info!("GA deser error {:?}", error).ok();
+                        #[cfg(feature = "semihosting")]
+                        hprintln!("GA deser error {:?}", error).ok();
                         let response = self.response_from_error(request, AuthenticatorError::InvalidCbor);
                         return self.start_sending(response);
                     }
                 };
+                // TODO: ensure earlier that RPC send queue is empty
+                self.rpc.send.enqueue(Request::Ctap2(ctap2::Request::GetAssertion(params))).unwrap();
+                self.state = State::WaitingOnAuthenticator(request);
+            }
 
-                match self.authenticator.make_credential(&params) {
-                    Err(error) => {
-                        info!("MC make_credential error {}", error as u8).ok();
-                        let response = self.response_from_error(request, error);
-                        self.start_sending(response);
-                    },
+            Operation::GetNextAssertion => {
+                info!("authenticatorGetNextAssertion").ok();
 
-                    Ok(attestation_object) => {
-                        let response = self.response_from_object(request, &attestation_object);
-                        self.start_sending(response);
-                    },
-                }
-            },
+                // TODO: ensure earlier that RPC send queue is empty
+                self.rpc.send.enqueue(Request::Ctap2(ctap2::Request::GetNextAssertion)).unwrap();
+                self.state = State::WaitingOnAuthenticator(request);
+            }
 
-            Operation::GetInfo => {
-                info!("authenticatorGetInfo").ok();
+            Operation::CredentialManagement => {
+                info!("authenticatorCredentialManagement").ok();
 
-                let authenticator_info = self.authenticator.get_info();
-
-                let size = 1 + match
-                    crate::types::cbor_serialize(&authenticator_info, &mut self.buffer[1..])
+                let params: ctap2::credential_management::Parameters = match cbor_deserialize(&mut self.buffer[1..])
                 {
-                    Ok(n) => n,
-                    Err(_) => {
-                        self.buffer[0] = AuthenticatorError::Other as u8;
-                        let response = Response::from_request_and_size(request, 1);
+                    Ok(params) => params,
+                    Err(error) => {
+                        #[cfg(feature = "semihosting")]
+                        hprintln!("CM deser error {:?}", error).ok();
+                        let response = self.response_from_error(request, AuthenticatorError::InvalidCbor);
                         return self.start_sending(response);
                     }
                 };
-
-                self.buffer[0] = 0;
-                let response = Response::from_request_and_size(request, size);
-                self.start_sending(response);
-            },
+                // TODO: ensure earlier that RPC send queue is empty
+                self.rpc.send.enqueue(Request::Ctap2(ctap2::Request::CredentialManagement(params))).unwrap();
+                self.state = State::WaitingOnAuthenticator(request);
+            }
 
             Operation::Reset => {
                 info!("authenticatorReset").ok();
 
-                match self.authenticator.reset() {
-                    Ok(_) =>  { self.buffer[0] = 0; },
-                    Err(error) => { self.buffer[0] = error as u8; },
+                // TODO: ensure earlier that RPC send queue is empty
+                self.rpc.send.enqueue(Request::Ctap2(ctap2::Request::Reset)).unwrap();
+                self.state = State::WaitingOnAuthenticator(request);
+            }
+
+            Operation::GetInfo => {
+                info!("authenticatorGetInfo").ok();
+                // TODO: ensure earlier that RPC send queue is empty
+                self.rpc.send.enqueue(Request::Ctap2(ctap2::Request::GetInfo)).unwrap();
+                self.state = State::WaitingOnAuthenticator(request);
+            }
+
+            Operation::ClientPin => {
+                info!("authenticatorClientPin").ok();
+                let params: ctap2::client_pin::Parameters = match cbor_deserialize(&mut self.buffer[1..])
+                {
+                    Ok(params) => params,
+                    Err(_error) => {
+                        // info!("CP deser error {:?}", error as u8).ok();
+                        let response = self.response_from_error(request, AuthenticatorError::InvalidCbor);
+                        return self.start_sending(response);
+                    }
+                };
+                // TODO: ensure earlier that RPC send queue is empty
+                self.rpc.send.enqueue(Request::Ctap2(ctap2::Request::ClientPin(params))).unwrap();
+                self.state = State::WaitingOnAuthenticator(request);
+            }
+
+            Operation::Vendor(vendor_operation) => {
+                info!("authenticatorVendor({:?})", &vendor_operation).ok();
+
+                let vo_u8: u8 = vendor_operation.into();
+                if vo_u8 == 0x41 {
+                    // copy-pasta for now
+                    let params: ctap2::credential_management::Parameters = match cbor_deserialize(&mut self.buffer[1..])
+                    {
+                        Ok(params) => params,
+                        Err(error) => {
+                            #[cfg(feature = "semihosting")]
+                            hprintln!("CM deser error {:?}", error).ok();
+                            let response = self.response_from_error(request, AuthenticatorError::InvalidCbor);
+                            return self.start_sending(response);
+                        }
+                    };
+                    // TODO: ensure earlier that RPC send queue is empty
+                    self.rpc.send.enqueue(Request::Ctap2(ctap2::Request::CredentialManagement(params))).unwrap();
+                    self.state = State::WaitingOnAuthenticator(request);
+
+                } else {
+                    // TODO: ensure earlier that RPC send queue is empty
+                    self.rpc.send.enqueue(Request::Ctap2(ctap2::Request::Vendor(vendor_operation))).unwrap();
+                    self.state = State::WaitingOnAuthenticator(request);
                 }
-                let response = Response::from_request_and_size(request, 1);
-                self.start_sending(response);
-            },
+            }
 
             unknown => {
                 let unknown: u8 = unknown.into();
                 info!("authenticator command {:?}", unknown).ok();
                 self.buffer[0] = AuthenticatorError::InvalidCommand as u8;
-                let response = Response::from_request_and_size(request, 1);
+                let response = self::Response::from_request_and_size(request, 1);
                 self.start_sending(response);
-            },
+            }
+        }
+    }
+
+    pub fn handle_response(&mut self) {
+        if let State::WaitingOnAuthenticator(request) = self.state {
+            if let Some(result) = self.rpc.recv.dequeue() {
+                // hprintln!("got response").ok();
+                match result {
+                    Err(error) => {
+                        info!("error {}", error as u8).ok();
+                        let response = self.response_from_error(request, error);
+                        self.start_sending(response);
+                    }
+
+                    Ok(response) => {
+                        use ctap_types::authenticator::Response;
+                        match response {
+                            Response::Ctap1(_response) => {
+                                todo!("CTAP1 responses");
+                            }
+
+                            Response::Ctap2(response) => {
+                                use ctap_types::authenticator::ctap2::Response;
+                                // hprintln!("authnr c2 resp: {:?}", &response).ok();
+                                let response = match response {
+                                    Response::GetInfo(response) => {
+                                        self.response_from_object(request, Some(&response))
+                                    }
+
+                                    Response::MakeCredential(response) => {
+                                        self.response_from_object(request, Some(&response))
+                                    }
+
+                                    Response::ClientPin(response) => {
+                                        self.response_from_object(request, Some(&response))
+                                    }
+
+                                    Response::GetAssertion(response) => {
+                                        self.response_from_object(request, Some(&response))
+                                    }
+
+                                    Response::GetNextAssertion(response) => {
+                                        self.response_from_object(request, Some(&response))
+                                    }
+
+                                    Response::CredentialManagement(response) => {
+                                        self.response_from_object(request, Some(&response))
+                                    }
+
+                                    Response::Reset => {
+                                        self.response_from_object::<()>(request, None)
+                                    }
+
+                                    Response::Vendor => {
+                                        self.response_from_object::<()>(request, None)
+                                    }
+
+                                    // _ => {
+                                    //     todo!("what about all this");
+                                    // }
+                                };
+                                #[cfg(feature = "semihosting")]
+                                // hprintln!("response: {:?}", &self.buffer[..response.length as usize]).ok();
+                                self.start_sending(response);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
     fn start_sending(&mut self, response: Response) {
-        self.state = State::ResponsePending(response);
+        self.state = State::WaitingToSend(response);
         self.maybe_write_packet();
     }
 
     // called from poll, and when a packet has been sent
     pub(crate) fn maybe_write_packet(&mut self) {
+
         match self.state {
-            State::ResponsePending(response) => {
+            State::WaitingToSend(response) => {
 
                 // zeros leftover bytes
                 let mut packet = [0u8; PACKET_SIZE];
@@ -870,7 +885,7 @@ where
                         }
                     },
                     Ok(_) => {
-                        hprintln!("short write").ok();
+                        debug!("short write").ok();
                         panic!("unexpected size writing packet!");
                     },
                 };

@@ -23,13 +23,34 @@ use crate::types::{
 //     fn poll(&mut self, wake: fn()) -> Poll<Self::Output>;
 // }
 
+pub enum Ctap2Request {
+    GetInfo,
+    MakeCredential(MakeCredentialParameters),
+    GetAssertions(GetAssertionParameters),
+    Reset,
+}
+
+// hmm how to tie reponse type to request type
+pub enum Ctap2Response {
+    GetInfo(AuthenticatorInfo),
+    MakeCredential(AttestationObject),
+    GetAssertions(AssertionResponses),
+    Reset,
+}
+
+pub trait Ctap2Api {
+
+    fn process(&mut self, request: &mut Ctap2Request) -> Result<Ctap2Response>;
+
+}
+
 /// an authenticator implements this `authenticator::Api`.
 /// TODO: modify interface so authenticator can process requests asynchronously.
 /// Maybe with core::future::Future?
 pub trait Api
 {
     /// describe authenticator capabilities
-    fn get_info(&self) -> AuthenticatorInfo;
+    fn get_info(&mut self) -> AuthenticatorInfo;
 
     /// eventually generate a credential with specified options
     fn make_credential(&mut self, params: &MakeCredentialParameters)

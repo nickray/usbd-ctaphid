@@ -214,7 +214,10 @@ impl authenticator::Api for InsecureRamAuthenticator {
 
     fn make_credential(&mut self, params: &MakeCredentialParameters) -> Result<AttestationObject> {
 
-        // 2. check pubKeyCredParams algorithm is valid COSE identifier and supported
+        // 1. excludeList present, contains credential ID on this authenticator bound to RP?
+        // --> wait for UP, error CredentialExcluded
+
+        // 2. check pubKeyCredParams algorithm is valid + supported COSE identifier
         let mut supported_algorithm = false;
         let mut eddsa = false;
         for param in params.pub_key_cred_params.iter() {
@@ -362,10 +365,10 @@ impl authenticator::Api for InsecureRamAuthenticator {
         Ok(attestation_object)
     }
 
-    fn get_info(&self) -> AuthenticatorInfo {
+    fn get_info(&mut self) -> AuthenticatorInfo {
 
         use core::str::FromStr;
-        let mut versions = Vec::<String<consts::U8>, consts::U2>::new();
+        let mut versions = Vec::<String<consts::U12>, consts::U3>::new();
         versions.push(String::from_str("FIDO_2_0").unwrap()).unwrap();
 
         AuthenticatorInfo {

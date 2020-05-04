@@ -1,9 +1,9 @@
 pub use heapless::{consts, ArrayLength, String, Vec};
+pub use heapless_bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use serde_indexed::{DeserializeIndexed, SerializeIndexed};
 
 use crate::{
-    bytes::Bytes,
     constants::{
         ATTESTED_CREDENTIAL_DATA_LENGTH,
         // ATTESTED_CREDENTIAL_DATA_LENGTH_BYTES,
@@ -48,15 +48,15 @@ pub fn cbor_deserialize<'de, T: serde::Deserialize<'de>>(
 #[derive(Copy,Clone,Debug,Eq,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CtapOptions {
-    rk: bool,
-    up: bool,
+    pub rk: bool,
+    pub up: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    uv: Option<bool>,
-    plat: bool,
+    pub uv: Option<bool>,
+    pub plat: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    client_pin: Option<bool>,
+    pub client_pin: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    cred_protect: Option<bool>,
+    pub cred_protect: Option<bool>,
 }
 
 impl Default for CtapOptions {
@@ -313,47 +313,47 @@ pub type AssertionResponses = Vec<AssertionResponse, consts::U8>;
 pub struct AuthenticatorInfo {
 
     // 0x01
-    pub(crate) versions: Vec<String<consts::U8>, consts::U2>,
+    pub versions: Vec<String<consts::U12>, consts::U3>,
 
     // 0x02
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) extensions: Option<Vec<String<consts::U11>, consts::U4>>,
+    pub extensions: Option<Vec<String<consts::U11>, consts::U4>>,
 
     // 0x03
     // #[serde(with = "serde_bytes")]
     // #[serde(serialize_with = "serde_bytes::serialize", deserialize_with = "serde_bytes::deserialize")]
     // #[serde(serialize_with = "serde_bytes::serialize")]
     // pub(crate) aaguid: Vec<u8, consts::U16>,
-    pub(crate) aaguid: Bytes<consts::U16>,
+    pub aaguid: Bytes<consts::U16>,
 
     // 0x04
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) options: Option<CtapOptions>,
+    pub options: Option<CtapOptions>,
 
     // 0x05
     // TODO: this is actually the constant MESSAGE_SIZE
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) max_msg_size: Option<usize>,
+    pub max_msg_size: Option<usize>,
 
     // 0x06
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) pin_protocols: Option<Vec<u8, consts::U1>>,
+    pub pin_protocols: Option<Vec<u8, consts::U1>>,
 
     // 0x07
     // only in FIDO_2_1_PRE, see https://git.io/JeNxG
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) max_creds_in_list: Option<usize>,
+    pub max_creds_in_list: Option<usize>,
 
     // 0x08
     // only in FIDO_2_1_PRE, see https://git.io/JeNxG
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) max_cred_id_length: Option<usize>,
+    pub max_cred_id_length: Option<usize>,
 
     // 0x09
     // only in FIDO_2_1_PRE, see https://git.io/JeNxG
     // can be: usb, nfc, ble, internal
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) transports: Option<Vec<Bytes<consts::U8>, consts::U4>>,
+    pub transports: Option<Vec<Bytes<consts::U8>, consts::U4>>,
 
     // #[serde(skip_serializing_if = "Option::is_none")]
     // pub(crate) algorithms: Option<&'l[u8]>,

@@ -1,19 +1,13 @@
 // use core::convert::TryInto as _;
 // use core::convert::TryFrom as _;
 
-// #[allow(unused_imports)]
-// use crate::{debug, error};
-
 use crate::{
-    authenticator::Api as AuthenticatorApi,
-    constants::{
-    //     MESSAGE_SIZE,
-        PACKET_SIZE,
-    },
-    pipe::{
-        // Command,
-        Pipe,
-    },
+    constants::{INTERRUPT_POLL_MILLISECONDS, PACKET_SIZE},
+    pipe::Pipe,
+};
+
+use ctap_types::{
+    rpc::TransportEndpoint,
 };
 
 use usb_device::{
@@ -26,21 +20,16 @@ use usb_device::{
 };
 
 /// Packet-level implementation of the CTAPHID protocol.
-pub struct CtapHid<'alloc, Authenticator: AuthenticatorApi, Bus: UsbBus> {
+pub struct CtapHid<'alloc, 'rpc, Bus: UsbBus> {
     interface: InterfaceNumber,
-    pipe: Pipe<'alloc, Authenticator, Bus>,
-    // read_endpoint: EndpointOut<'alloc, Bus>,
-    // write_endpoint: EndpointIn<'alloc, Bus>,
+    pipe: Pipe<'alloc, 'rpc, Bus>,
 }
 
-const INTERRUPT_POLL_MILLISECONDS: u8 = 5;
-
-impl <'alloc, Authenticator, Bus> CtapHid<'alloc, Authenticator, Bus>
+impl<'alloc, 'rpc, Bus> CtapHid<'alloc, 'rpc, Bus>
 where
-    Authenticator: AuthenticatorApi,
 	Bus: UsbBus
 {
-	pub fn new(allocate: &'alloc UsbBusAllocator<Bus>, authenticator: &'alloc mut Authenticator)
+	pub fn new(allocate: &'alloc UsbBusAllocator<Bus>, rpc: TransportEndpoint<'rpc>)
         -> Self
     {
         // 64 bytes, interrupt endpoint polled every 5 milliseconds
@@ -49,7 +38,8 @@ where
         // 64 bytes, interrupt endpoint polled every 5 milliseconds
         let write_endpoint: EndpointIn<'alloc, Bus> =
             allocate.interrupt(PACKET_SIZE as u16, INTERRUPT_POLL_MILLISECONDS);
-        let pipe = Pipe::new(read_endpoint, write_endpoint, authenticator);
+
+        let pipe = Pipe::new(read_endpoint, write_endpoint, rpc);
 
         Self {
             interface: allocate.interface(),
@@ -57,13 +47,15 @@ where
         }
 	}
 
-    // pub fn read_packet(&mut self, data: &mut [u8]) -> UsbResult<usize> {
-    //     self.pipe.read_endpoint.read(data)
+    // pub fn borrow_mut_authenticator(&mut self) -> &mut Authenticator {
+    //     self.pipe.borrow_mut_authenticator()
     // }
 
-    // pub fn write_packet(&mut self, data: &[u8]) -> UsbResult<usize> {
-    //     self.pipe.write_endpoint.write(data)
-    // }
+    // implement DerefMut<Target = Pipe> instead
+    pub fn pipe(&mut self) -> &mut Pipe<'alloc, 'rpc, Bus> {
+        &mut self.pipe
+    }
+
 }
 
 const HID_INTERFACE_CLASS: u8 = 0x03;
@@ -125,10 +117,8 @@ pub enum ClassRequests {
     SetProtocol = 0xB,
 }
 
-impl<'alloc, Authenticator, Bus> UsbClass<Bus> for CtapHid<'alloc, Authenticator, Bus>
-where
-    Authenticator: AuthenticatorApi,
-    Bus: UsbBus
+impl<'alloc, 'rpc, Bus> UsbClass<Bus> for CtapHid<'alloc, 'rpc, Bus>
+where Bus: UsbBus
 {
     fn get_configuration_descriptors(&self, writer: &mut DescriptorWriter) -> UsbResult<()> {
 
@@ -155,6 +145,11 @@ where
     }
 
     fn poll(&mut self) {
+        if self.pipe.rpc.recv.ready() {
+            // hprintln!("recv pipe ready").ok();
+        }
+        // hprintln!("state = {:?}", self.pipe.state).ok();
+        self.pipe.handle_response();
         self.pipe.maybe_write_packet();
     }
 
@@ -221,5 +216,11 @@ where
         }
     }
 
+}
+
+impl<'alloc, 'rpc, Bus: UsbBus> CtapHid<'alloc, 'rpc, Bus> {
+    pub fn check_for_responses(&mut self) {
+        self.poll();
+    }
 }
 

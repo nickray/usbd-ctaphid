@@ -6,44 +6,17 @@ license = "Apache-2.0 OR MIT"
 edition = "2018"
 
 [dependencies]
-cortex-m-funnel = { version = "0.1.0-alpha.1", optional = true }
-cortex-m-semihosting = "0.3.5"
-cosey = { git = "https://github.com/ycrypto/cosey", branch = "main" }
-ctapcbor = { git = "https://github.com/nickray/ctapcbor", branch = "main" }
-# ctapcbor = { path = "../ctapcbor" } # , features = ["ufmt"] }
-# cosey = { path = "../cosey" }
-heapless = { version = "0.5.1", default-features = false, features = ["serde"] }
-heapless-bytes = { git = "https://github.com/ycrypto/heapless-bytes", branch = "main", features = ["cbor"] }
-serde = { version = "1.0", default-features = false, features = ["derive"] }
+cortex-m-semihosting = { version = "0.3.5", optional = true }
+ctap-types = { path = "../ctap-types" }
+serde = { version = "1.0", default-features = false }
 usb-device = "0.2.3"
 
-# littlefs2 = { version = "0.1.0-alpha.0", optional = true }
-# chacha20 = { version = "0.2.3" }
-derpy = { git = "https://github.com/ycrypto/derpy", branch = "main", optional = true }
-nisty = { git = "https://github.com/ycrypto/nisty", branch = "main", default-features = false, features = ["asn1-der", "cose"], optional = true }
-salty = { git = "https://github.com/ycrypto/salty", branch = "main", features = ["cose"], optional = true }
-sha2 = { version = "0.8.0", default-features = false, optional = true }
-ufmt = { version = "0.1.0", optional = true}
-# ufmt = { git = "https://github.com/nickray/ufmt", optional = true }
-
-serde_cbor = { version = "0.11.0", default-features = false }
-serde-indexed = { git = "https://github.com/ycrypto/serde-indexed", branch = "main" }
-serde_repr = "0.1"
-# serde-indexed = { path = "../serde-indexed" }
-# [dependencies.serde_cbor]
-# # path = "../serde_cbor"
-# git = "https://github.com/nickray/serde-cbor"
-# branch = "nickray-configurable-packing"
-# default-features = false
+cortex-m-funnel = { version = "0.1.0-alpha.1", optional = true }
+ufmt = { version = "0.1.0", optional = true }
 
 [features]
+default = ["logging"]
 logging = ["cortex-m-funnel", "ufmt"]
-insecure-ram-authenticator = ["derpy", "nisty", "salty/haase", "sha2"]
-
-# issue: this dependency of bindgen triggers non-`no_std`...
-# [patch.crates-io]
-# rustc-hash = { git = "https://github.com/nickray/rustc-hash", branch = "nickray-remove-byteorder" }
-# [patch.crates-io]
-# serde_derive = { path = "../serde/serde_derive" }
-# [patch.crates-io]
-# ctapcbor = { path = "../ctapcbor" }
+# insecure-ram-authenticator = ["derpy", "nisty", "salty/haase", "sha2"]
+semihost-responses = ["semihosting"]
+semihosting = ["cortex-m-semihosting"]
