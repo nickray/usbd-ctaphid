@@ -210,13 +210,13 @@ pub enum State {
     Sending((Response, MessageState)),
 }
 
-pub struct Pipe<'alloc, 'rpc, Bus: UsbBus> {
+pub struct Pipe<'alloc, Bus: UsbBus> {
 
     read_endpoint: EndpointOut<'alloc, Bus>,
     write_endpoint: EndpointIn<'alloc, Bus>,
     pub state: State,
 
-    pub rpc: TransportEndpoint<'rpc>,
+    pub rpc: TransportEndpoint,
 
     // shared between requests and responses, due to size
     buffer: [u8; MESSAGE_SIZE],
@@ -227,7 +227,7 @@ pub struct Pipe<'alloc, 'rpc, Bus: UsbBus> {
 
 }
 
-impl<'alloc, 'rpc, Bus: UsbBus> Pipe<'alloc, 'rpc, Bus> {
+impl<'alloc, Bus: UsbBus> Pipe<'alloc, Bus> {
 
     // pub fn borrow_mut_authenticator(&mut self) -> &mut Authenticator {
     //     &mut self.authenticator
@@ -236,7 +236,7 @@ impl<'alloc, 'rpc, Bus: UsbBus> Pipe<'alloc, 'rpc, Bus> {
     pub(crate) fn new(
         read_endpoint: EndpointOut<'alloc, Bus>,
         write_endpoint: EndpointIn<'alloc, Bus>,
-        rpc: TransportEndpoint<'rpc>,
+        rpc: TransportEndpoint,
     ) -> Self
     {
         Self {

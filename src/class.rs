@@ -20,16 +20,16 @@ use usb_device::{
 };
 
 /// Packet-level implementation of the CTAPHID protocol.
-pub struct CtapHid<'alloc, 'rpc, Bus: UsbBus> {
+pub struct CtapHid<'alloc, Bus: UsbBus> {
     interface: InterfaceNumber,
-    pipe: Pipe<'alloc, 'rpc, Bus>,
+    pipe: Pipe<'alloc, Bus>,
 }
 
-impl<'alloc, 'rpc, Bus> CtapHid<'alloc, 'rpc, Bus>
+impl<'alloc, Bus> CtapHid<'alloc, Bus>
 where
 	Bus: UsbBus
 {
-	pub fn new(allocate: &'alloc UsbBusAllocator<Bus>, rpc: TransportEndpoint<'rpc>)
+	pub fn new(allocate: &'alloc UsbBusAllocator<Bus>, rpc: TransportEndpoint)
         -> Self
     {
         // 64 bytes, interrupt endpoint polled every 5 milliseconds
@@ -52,7 +52,7 @@ where
     // }
 
     // implement DerefMut<Target = Pipe> instead
-    pub fn pipe(&mut self) -> &mut Pipe<'alloc, 'rpc, Bus> {
+    pub fn pipe(&mut self) -> &mut Pipe<'alloc, Bus> {
         &mut self.pipe
     }
 
@@ -117,7 +117,7 @@ pub enum ClassRequests {
     SetProtocol = 0xB,
 }
 
-impl<'alloc, 'rpc, Bus> UsbClass<Bus> for CtapHid<'alloc, 'rpc, Bus>
+impl<'alloc, Bus> UsbClass<Bus> for CtapHid<'alloc, Bus>
 where Bus: UsbBus
 {
     fn get_configuration_descriptors(&self, writer: &mut DescriptorWriter) -> UsbResult<()> {
@@ -218,7 +218,7 @@ where Bus: UsbBus
 
 }
 
-impl<'alloc, 'rpc, Bus: UsbBus> CtapHid<'alloc, 'rpc, Bus> {
+impl<'alloc, Bus: UsbBus> CtapHid<'alloc, Bus> {
     pub fn check_for_responses(&mut self) {
         self.poll();
     }
